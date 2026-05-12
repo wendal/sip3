@@ -1,6 +1,6 @@
 use anyhow::Result;
 use axum::{
-    routing::{delete, get, post, put},
+    routing::{get, put},
     Router,
 };
 use sqlx::MySqlPool;
@@ -25,7 +25,10 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let state = AppState { pool, config: cfg.clone() };
+    let state = AppState {
+        pool,
+        config: cfg.clone(),
+    };
 
     let app = Router::new()
         .route("/api/health", get(health))

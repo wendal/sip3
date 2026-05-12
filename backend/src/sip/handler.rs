@@ -1,20 +1,21 @@
 use anyhow::{anyhow, Result};
+use sqlx::MySqlPool;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use sqlx::MySqlPool;
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
-use crate::config::Config;
-use super::registrar::Registrar;
 use super::proxy::Proxy;
+use super::registrar::Registrar;
+use crate::config::Config;
 
 /// Parsed SIP request or response
 #[derive(Debug, Clone)]
 pub struct SipMessage {
     pub method: Option<String>,
     pub request_uri: Option<String>,
+    #[allow(dead_code)]
     pub status_code: Option<u16>,
     pub headers: HashMap<String, Vec<String>>,
     pub body: String,
@@ -85,7 +86,10 @@ impl SipMessage {
 
     pub fn header(&self, name: &str) -> Option<&str> {
         let key = normalize_header_name(name);
-        self.headers.get(&key).and_then(|v| v.first()).map(|s| s.as_str())
+        self.headers
+            .get(&key)
+            .and_then(|v| v.first())
+            .map(|s| s.as_str())
     }
 
     pub fn all_headers_vec(&self, name: &str) -> Vec<&str> {
@@ -96,15 +100,34 @@ impl SipMessage {
             .unwrap_or_default()
     }
 
-    pub fn call_id(&self) -> Option<&str> { self.header("call-id") }
-    pub fn from_header(&self) -> Option<&str> { self.header("from") }
-    pub fn to_header(&self) -> Option<&str> { self.header("to") }
-    pub fn contact(&self) -> Option<&str> { self.header("contact") }
-    pub fn via_headers(&self) -> Vec<&str> { self.all_headers_vec("via") }
-    pub fn cseq(&self) -> Option<&str> { self.header("cseq") }
-    pub fn expires(&self) -> Option<u32> { self.header("expires").and_then(|s| s.parse().ok()) }
-    pub fn user_agent(&self) -> Option<&str> { self.header("user-agent") }
-    pub fn authorization(&self) -> Option<&str> { self.header("authorization") }
+    pub fn call_id(&self) -> Option<&str> {
+        self.header("call-id")
+    }
+    #[allow(clippy::wrong_self_convention)]
+    pub fn from_header(&self) -> Option<&str> {
+        self.header("from")
+    }
+    pub fn to_header(&self) -> Option<&str> {
+        self.header("to")
+    }
+    pub fn contact(&self) -> Option<&str> {
+        self.header("contact")
+    }
+    pub fn via_headers(&self) -> Vec<&str> {
+        self.all_headers_vec("via")
+    }
+    pub fn cseq(&self) -> Option<&str> {
+        self.header("cseq")
+    }
+    pub fn expires(&self) -> Option<u32> {
+        self.header("expires").and_then(|s| s.parse().ok())
+    }
+    pub fn user_agent(&self) -> Option<&str> {
+        self.header("user-agent")
+    }
+    pub fn authorization(&self) -> Option<&str> {
+        self.header("authorization")
+    }
 }
 
 pub fn normalize_header_name(name: &str) -> String {
@@ -197,9 +220,7 @@ pub fn extract_uri(addr: &str) -> Option<String> {
 
 /// Extract username from a SIP URI (sip:user@host)
 pub fn uri_username(uri: &str) -> Option<String> {
-    let without_scheme = uri
-        .trim_start_matches("sip:")
-        .trim_start_matches("sips:");
+    let without_scheme = uri.trim_start_matches("sip:").trim_start_matches("sips:");
     if without_scheme.contains('@') {
         Some(without_scheme.split('@').next()?.to_string())
     } else {
@@ -208,10 +229,9 @@ pub fn uri_username(uri: &str) -> Option<String> {
 }
 
 /// Extract host from a SIP URI
+#[allow(dead_code)]
 pub fn uri_host(uri: &str) -> Option<String> {
-    let without_scheme = uri
-        .trim_start_matches("sip:")
-        .trim_start_matches("sips:");
+    let without_scheme = uri.trim_start_matches("sip:").trim_start_matches("sips:");
     let part = if without_scheme.contains('@') {
         without_scheme.split('@').nth(1).unwrap_or(without_scheme)
     } else {
@@ -241,14 +261,18 @@ pub fn parse_auth_params(header: &str) -> HashMap<String, String> {
         while pos < len && (bytes[pos] == b',' || bytes[pos] == b' ' || bytes[pos] == b'\t') {
             pos += 1;
         }
-        if pos >= len { break; }
+        if pos >= len {
+            break;
+        }
 
         // Read key
         let key_start = pos;
         while pos < len && bytes[pos] != b'=' {
             pos += 1;
         }
-        if pos >= len { break; }
+        if pos >= len {
+            break;
+        }
         let key = rest[key_start..pos].trim().to_lowercase();
         pos += 1; // skip '='
 
@@ -257,11 +281,15 @@ pub fn parse_auth_params(header: &str) -> HashMap<String, String> {
             pos += 1; // skip opening quote
             let val_start = pos;
             while pos < len && bytes[pos] != b'"' {
-                if bytes[pos] == b'\\' { pos += 1; } // escaped char
+                if bytes[pos] == b'\\' {
+                    pos += 1;
+                } // escaped char
                 pos += 1;
             }
             let val = rest[val_start..pos].to_string();
-            if pos < len { pos += 1; } // skip closing quote
+            if pos < len {
+                pos += 1;
+            } // skip closing quote
             params.insert(key, val);
         } else {
             let val_start = pos;
@@ -290,16 +318,23 @@ pub fn md5_hex(input: &str) -> String {
 }
 
 /// Verify SIP Digest authentication
+#[allow(dead_code)]
 pub fn verify_digest_auth(
     auth_params: &HashMap<String, String>,
     password: &str,
     method: &str,
 ) -> bool {
-    let username = auth_params.get("username").map(|s| s.as_str()).unwrap_or("");
+    let username = auth_params
+        .get("username")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let realm = auth_params.get("realm").map(|s| s.as_str()).unwrap_or("");
     let nonce = auth_params.get("nonce").map(|s| s.as_str()).unwrap_or("");
     let uri = auth_params.get("uri").map(|s| s.as_str()).unwrap_or("");
-    let response = auth_params.get("response").map(|s| s.as_str()).unwrap_or("");
+    let response = auth_params
+        .get("response")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let qop = auth_params.get("qop").map(|s| s.as_str()).unwrap_or("");
     let nc = auth_params.get("nc").map(|s| s.as_str()).unwrap_or("");
     let cnonce = auth_params.get("cnonce").map(|s| s.as_str()).unwrap_or("");
@@ -308,7 +343,10 @@ pub fn verify_digest_auth(
     let ha2 = md5_hex(&format!("{}:{}", method, uri));
 
     let expected = if qop == "auth" {
-        md5_hex(&format!("{}:{}:{}:{}:{}:{}", ha1, nonce, nc, cnonce, qop, ha2))
+        md5_hex(&format!(
+            "{}:{}:{}:{}:{}:{}",
+            ha1, nonce, nc, cnonce, qop, ha2
+        ))
     } else {
         md5_hex(&format!("{}:{}:{}", ha1, nonce, ha2))
     };
@@ -318,7 +356,9 @@ pub fn verify_digest_auth(
 
 #[derive(Clone)]
 pub struct SipHandler {
+    #[allow(dead_code)]
     cfg: Config,
+    #[allow(dead_code)]
     pool: MySqlPool,
     socket: Arc<UdpSocket>,
     registrar: Registrar,
@@ -329,7 +369,13 @@ impl SipHandler {
     pub fn with_socket(cfg: Config, pool: MySqlPool, socket: Arc<UdpSocket>) -> Self {
         let registrar = Registrar::new(pool.clone(), cfg.clone());
         let proxy = Proxy::new(pool.clone(), cfg.clone(), socket.clone());
-        Self { cfg, pool, socket, registrar, proxy }
+        Self {
+            cfg,
+            pool,
+            socket,
+            registrar,
+            proxy,
+        }
     }
 
     pub async fn handle_datagram(&self, data: Vec<u8>, src: SocketAddr) -> Result<()> {

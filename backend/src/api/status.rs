@@ -1,12 +1,8 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, Json};
 use serde_json::{json, Value};
 
-use crate::models::{Registration, Call};
 use super::AppState;
+use crate::models::{Call, Registration};
 
 pub async fn list_registrations(
     State(state): State<AppState>,

@@ -7,8 +7,10 @@ pub struct Account {
     pub id: u64,
     pub username: String,
     #[serde(skip_serializing)]
+    #[allow(dead_code)]
     pub password_hash: String,
     #[serde(skip_serializing)]
+    #[allow(dead_code)]
     pub ha1_hash: Option<String>,
     pub display_name: Option<String>,
     pub domain: String,

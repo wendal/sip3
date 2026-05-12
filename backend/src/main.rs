@@ -1,11 +1,11 @@
 use anyhow::Result;
 use tracing::info;
 
+mod api;
 mod config;
 mod db;
 mod models;
 mod sip;
-mod api;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,7 +17,10 @@ async fn main() -> Result<()> {
         .init();
 
     let cfg = config::Config::load()?;
-    info!("Configuration loaded, SIP domain: {}", cfg.server.sip_domain);
+    info!(
+        "Configuration loaded, SIP domain: {}",
+        cfg.server.sip_domain
+    );
 
     let pool = db::init_pool(&cfg.database.url, cfg.database.max_connections).await?;
     info!("Database pool initialized");
@@ -39,7 +42,11 @@ async fn main() -> Result<()> {
     });
 
     let (sip_result, api_result) = tokio::join!(sip_handle, api_handle);
-    if let Err(e) = sip_result { tracing::error!("SIP task panicked: {}", e); }
-    if let Err(e) = api_result { tracing::error!("API task panicked: {}", e); }
+    if let Err(e) = sip_result {
+        tracing::error!("SIP task panicked: {}", e);
+    }
+    if let Err(e) = api_result {
+        tracing::error!("API task panicked: {}", e);
+    }
     Ok(())
 }

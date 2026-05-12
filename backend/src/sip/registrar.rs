@@ -5,11 +5,11 @@ use sqlx::MySqlPool;
 use std::net::SocketAddr;
 use tracing::{info, warn};
 
-use crate::config::Config;
 use super::handler::{
-    base_response, extract_uri, make_www_authenticate, parse_auth_params,
-    uri_username, md5_hex, SipMessage,
+    base_response, extract_uri, make_www_authenticate, md5_hex, parse_auth_params, uri_username,
+    SipMessage,
 };
+use crate::config::Config;
 
 #[derive(Clone)]
 pub struct Registrar {
@@ -85,13 +85,11 @@ impl Registrar {
                 .unwrap_or(self.cfg.auth.registration_expires);
 
             if contact.trim() == "*" || expires == 0 {
-                sqlx::query(
-                    "DELETE FROM sip_registrations WHERE username = ? AND domain = ?",
-                )
-                .bind(&username)
-                .bind(&self.cfg.server.sip_domain)
-                .execute(&self.pool)
-                .await?;
+                sqlx::query("DELETE FROM sip_registrations WHERE username = ? AND domain = ?")
+                    .bind(&username)
+                    .bind(&self.cfg.server.sip_domain)
+                    .execute(&self.pool)
+                    .await?;
                 info!("Unregistered user: {}", username);
                 return Ok(base_response(msg, 200, "OK").build());
             }
@@ -125,7 +123,10 @@ impl Registrar {
             .execute(&self.pool)
             .await?;
 
-            info!("Registered {} at {} (expires in {}s)", username, contact_uri, expires);
+            info!(
+                "Registered {} at {} (expires in {}s)",
+                username, contact_uri, expires
+            );
 
             Ok(base_response(msg, 200, "OK")
                 .header("Contact", &format!("<{}>;expires={}", contact_uri, expires))
@@ -149,7 +150,10 @@ fn verify_digest_with_ha1(
     method: &str,
 ) -> bool {
     let uri = auth_params.get("uri").map(|s| s.as_str()).unwrap_or("");
-    let response = auth_params.get("response").map(|s| s.as_str()).unwrap_or("");
+    let response = auth_params
+        .get("response")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let nonce = auth_params.get("nonce").map(|s| s.as_str()).unwrap_or("");
     let qop = auth_params.get("qop").map(|s| s.as_str()).unwrap_or("");
     let nc = auth_params.get("nc").map(|s| s.as_str()).unwrap_or("");
@@ -158,7 +162,10 @@ fn verify_digest_with_ha1(
     let ha2 = md5_hex(&format!("{}:{}", method, uri));
 
     let expected = if qop == "auth" {
-        md5_hex(&format!("{}:{}:{}:{}:{}:{}", ha1, nonce, nc, cnonce, qop, ha2))
+        md5_hex(&format!(
+            "{}:{}:{}:{}:{}:{}",
+            ha1, nonce, nc, cnonce, qop, ha2
+        ))
     } else {
         md5_hex(&format!("{}:{}:{}", ha1, nonce, ha2))
     };

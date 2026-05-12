@@ -6,8 +6,8 @@ use axum::{
 use bcrypt::{hash, DEFAULT_COST};
 use serde_json::{json, Value};
 
-use crate::models::{Account, CreateAccount, UpdateAccount};
 use super::AppState;
+use crate::models::{Account, CreateAccount, UpdateAccount};
 
 pub async fn list(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
     let accounts: Vec<Account> = sqlx::query_as(
@@ -27,7 +27,10 @@ pub async fn create(
     Json(body): Json<CreateAccount>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     if body.username.is_empty() || body.password.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "username and password are required".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "username and password are required".to_string(),
+        ));
     }
 
     let password_hash = hash(&body.password, DEFAULT_COST)
@@ -62,7 +65,9 @@ pub async fn create(
         }
     })?;
 
-    Ok(Json(json!({ "id": result.last_insert_id(), "message": "Account created" })))
+    Ok(Json(
+        json!({ "id": result.last_insert_id(), "message": "Account created" }),
+    ))
 }
 
 pub async fn update(

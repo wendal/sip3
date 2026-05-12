@@ -20,8 +20,13 @@ mod tests {
 
         let mut in_headers = true;
         for line in lines {
-            if !in_headers { break; }
-            if line.is_empty() { in_headers = false; continue; }
+            if !in_headers {
+                break;
+            }
+            if line.is_empty() {
+                in_headers = false;
+                continue;
+            }
             if let Some(pos) = line.find(':') {
                 let name = line[..pos].trim().to_lowercase();
                 let value = line[pos + 1..].trim().to_string();
@@ -78,7 +83,10 @@ mod tests {
     #[test]
     fn test_extract_uri_from_address() {
         let cases = vec![
-            ("Alice <sip:alice@sip.example.com>", "sip:alice@sip.example.com"),
+            (
+                "Alice <sip:alice@sip.example.com>",
+                "sip:alice@sip.example.com",
+            ),
             ("<sip:bob@192.168.1.1:5060>", "sip:bob@192.168.1.1:5060"),
             ("sip:charlie@sip.example.com", "sip:charlie@sip.example.com"),
         ];
@@ -119,9 +127,7 @@ mod tests {
     }
 
     fn uri_username(uri: &str) -> Option<String> {
-        let without_scheme = uri
-            .trim_start_matches("sip:")
-            .trim_start_matches("sips:");
+        let without_scheme = uri.trim_start_matches("sip:").trim_start_matches("sips:");
         if without_scheme.contains('@') {
             Some(without_scheme.split('@').next()?.to_string())
         } else {
@@ -162,8 +168,14 @@ mod tests {
         let params = parse_auth_params(auth_header);
 
         assert_eq!(params.get("username").map(|s| s.as_str()), Some("alice"));
-        assert_eq!(params.get("realm").map(|s| s.as_str()), Some("sip.example.com"));
-        assert_eq!(params.get("nonce").map(|s| s.as_str()), Some("abcdef123456"));
+        assert_eq!(
+            params.get("realm").map(|s| s.as_str()),
+            Some("sip.example.com")
+        );
+        assert_eq!(
+            params.get("nonce").map(|s| s.as_str()),
+            Some("abcdef123456")
+        );
     }
 
     fn parse_auth_params(header: &str) -> HashMap<String, String> {

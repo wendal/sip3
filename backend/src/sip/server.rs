@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::info;
 
-use crate::config::Config;
 use super::handler::SipHandler;
+use crate::config::Config;
 
 pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let addr = format!("{}:{}", cfg.server.sip_host, cfg.server.sip_port);

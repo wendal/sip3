@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
-use crate::config::Config;
 use super::handler::{base_response, extract_uri, uri_username, SipMessage};
+use crate::config::Config;
 
 #[derive(Clone)]
 pub struct Proxy {
@@ -21,12 +21,12 @@ impl Proxy {
         Self { pool, cfg, socket }
     }
 
-    pub async fn handle_invite(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
+    pub async fn handle_invite(&self, msg: &SipMessage, _src: SocketAddr) -> Result<String> {
         let request_uri = msg.request_uri.as_deref().unwrap_or("");
         let callee = uri_username(request_uri).unwrap_or_default();
         let caller = msg
             .from_header()
-            .and_then(|f| extract_uri(f))
+            .and_then(extract_uri)
             .and_then(|u| uri_username(&u))
             .unwrap_or_else(|| "unknown".to_string());
         let call_id = msg.call_id().unwrap_or("").to_string();
@@ -78,12 +78,16 @@ impl Proxy {
         .await;
 
         // Forward INVITE to callee
-        let target_addr: SocketAddr =
-            format!("{}:{}", source_ip, source_port).parse()?;
+        let target_addr: SocketAddr = format!("{}:{}", source_ip, source_port).parse()?;
         let forwarded = self.build_forwarded_invite(msg, &contact_uri, max_fwd - 1);
-        self.socket.send_to(forwarded.as_bytes(), target_addr).await?;
+        self.socket
+            .send_to(forwarded.as_bytes(), target_addr)
+            .await?;
 
-        info!("Proxied INVITE from {} to {} at {}", caller, callee, target_addr);
+        info!(
+            "Proxied INVITE from {} to {} at {}",
+            caller, callee, target_addr
+        );
 
         Ok(base_response(msg, 100, "Trying").build())
     }
