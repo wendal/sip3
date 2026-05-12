@@ -79,13 +79,15 @@ const duration = (row) => {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
+const AUTO_REFRESH_INTERVAL_MS = 15_000 // 15 seconds
+
 let timer
 onMounted(async () => {
   await Promise.all([store.fetchRegistrations(), store.fetchCalls()])
   timer = setInterval(() => {
     store.fetchRegistrations()
     store.fetchCalls()
-  }, 15000)
+  }, AUTO_REFRESH_INTERVAL_MS)
 })
 onUnmounted(() => clearInterval(timer))
 </script>

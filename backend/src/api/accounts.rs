@@ -5,19 +5,17 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use serde_json::{json, Value};
-use sqlx::MySqlPool;
 
 use crate::models::{Account, CreateAccount, UpdateAccount};
+use super::AppState;
 
-const SIP_REALM: &str = "sip.example.com";
-
-pub async fn list(State(pool): State<MySqlPool>) -> Result<Json<Value>, (StatusCode, String)> {
+pub async fn list(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
     let accounts: Vec<Account> = sqlx::query_as(
         "SELECT id, username, password_hash, ha1_hash, display_name, domain, enabled,
                 created_at, updated_at
          FROM sip_accounts ORDER BY created_at DESC",
     )
-    .fetch_all(&pool)
+    .fetch_all(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -25,7 +23,7 @@ pub async fn list(State(pool): State<MySqlPool>) -> Result<Json<Value>, (StatusC
 }
 
 pub async fn create(
-    State(pool): State<MySqlPool>,
+    State(state): State<AppState>,
     Json(body): Json<CreateAccount>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     if body.username.is_empty() || body.password.is_empty() {
@@ -35,11 +33,13 @@ pub async fn create(
     let password_hash = hash(&body.password, DEFAULT_COST)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let domain = body.domain.as_deref().unwrap_or("sip.example.com").to_string();
+    let realm = &state.config.auth.realm;
+    let domain = body.domain.as_deref().unwrap_or(realm.as_str()).to_string();
 
+    // Pre-compute HA1 for SIP Digest auth: MD5(username:realm:password)
     let ha1 = format!(
         "{:x}",
-        md5::compute(format!("{}:{}:{}", body.username, SIP_REALM, body.password).as_bytes())
+        md5::compute(format!("{}:{}:{}", body.username, realm, body.password).as_bytes())
     );
 
     let result = sqlx::query(
@@ -51,7 +51,7 @@ pub async fn create(
     .bind(&ha1)
     .bind(&body.display_name)
     .bind(&domain)
-    .execute(&pool)
+    .execute(&state.pool)
     .await
     .map_err(|e| {
         let msg = e.to_string();
@@ -66,14 +66,13 @@ pub async fn create(
 }
 
 pub async fn update(
-    State(pool): State<MySqlPool>,
+    State(state): State<AppState>,
     Path(id): Path<u64>,
     Json(body): Json<UpdateAccount>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    // Get current username for HA1 computation
     let row: Option<(String,)> = sqlx::query_as("SELECT username FROM sip_accounts WHERE id = ?")
         .bind(id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -82,18 +81,20 @@ pub async fn update(
         None => return Err((StatusCode::NOT_FOUND, "Account not found".to_string())),
     };
 
+    let realm = &state.config.auth.realm;
+
     if let Some(password) = &body.password {
         let new_hash = bcrypt::hash(password, DEFAULT_COST)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         let ha1 = format!(
             "{:x}",
-            md5::compute(format!("{}:{}:{}", username, SIP_REALM, password).as_bytes())
+            md5::compute(format!("{}:{}:{}", username, realm, password).as_bytes())
         );
         sqlx::query("UPDATE sip_accounts SET password_hash = ?, ha1_hash = ? WHERE id = ?")
             .bind(&new_hash)
             .bind(&ha1)
             .bind(id)
-            .execute(&pool)
+            .execute(&state.pool)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
@@ -102,7 +103,7 @@ pub async fn update(
         sqlx::query("UPDATE sip_accounts SET display_name = ? WHERE id = ?")
             .bind(display_name)
             .bind(id)
-            .execute(&pool)
+            .execute(&state.pool)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
@@ -111,7 +112,7 @@ pub async fn update(
         sqlx::query("UPDATE sip_accounts SET domain = ? WHERE id = ?")
             .bind(domain)
             .bind(id)
-            .execute(&pool)
+            .execute(&state.pool)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
@@ -120,7 +121,7 @@ pub async fn update(
         sqlx::query("UPDATE sip_accounts SET enabled = ? WHERE id = ?")
             .bind(enabled)
             .bind(id)
-            .execute(&pool)
+            .execute(&state.pool)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
@@ -129,12 +130,12 @@ pub async fn update(
 }
 
 pub async fn delete_account(
-    State(pool): State<MySqlPool>,
+    State(state): State<AppState>,
     Path(id): Path<u64>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let result = sqlx::query("DELETE FROM sip_accounts WHERE id = ?")
         .bind(id)
-        .execute(&pool)
+        .execute(&state.pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
