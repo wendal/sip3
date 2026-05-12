@@ -1,0 +1,14 @@
+[server]
+sip_host = "0.0.0.0"
+sip_port = 5060
+sip_domain = "sip.example.com"
+api_host = "0.0.0.0"
+api_port = 3000
+
+[database]
+url = "mysql://sip3:sip3pass@localhost:3306/sip3"
+max_connections = 10
+
+[auth]
+realm = "sip.example.com"
+registration_expires = 3600

@@ -1,0 +1,67 @@
+version: '3.9'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: sip3-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: sip3
+      MYSQL_USER: sip3
+      MYSQL_PASSWORD: sip3pass
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql
+      - ./migrations/002_seed.sql:/docker-entrypoint-initdb.d/002_seed.sql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "sip3", "-psip3pass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: sip3-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SIP3__DATABASE__URL: "mysql://sip3:sip3pass@mysql:3306/sip3"
+      SIP3__SERVER__SIP_HOST: "0.0.0.0"
+      SIP3__SERVER__SIP_PORT: "5060"
+      SIP3__SERVER__API_HOST: "0.0.0.0"
+      SIP3__SERVER__API_PORT: "3000"
+      SIP3__SERVER__SIP_DOMAIN: "sip.example.com"
+      SIP3__AUTH__REALM: "sip.example.com"
+      RUST_LOG: "info"
+    ports:
+      - "5060:5060/udp"
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: sip3-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+
+volumes:
+  mysql_data:
