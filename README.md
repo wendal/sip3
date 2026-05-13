@@ -36,7 +36,7 @@ cd sip3
 docker compose up -d
 ```
 
-Open http://localhost to access the admin UI.
+Open http://localhost:8030 to access the admin UI.
 SIP server listens on UDP port 5060.
 
 ### Architecture
@@ -48,7 +48,7 @@ SIP Client ──UDP 5060──► SIP Server (Rust)
                          │ MySQL 8.0 │
                          └─────▲─────┘
                                │
-Admin UI ──HTTP 80──► Nginx ──► REST API :3000
+Admin UI ──HTTP 8030──► Nginx ──► REST API :3000
 ```
 
 ### API Endpoints
@@ -122,7 +122,7 @@ cd sip3
 docker compose up -d
 ```
 
-访问 http://localhost 打开管理界面。
+访问 http://localhost:8030 打开管理界面。
 SIP 服务器监听 UDP 5060 端口。
 
 ### 架构说明
@@ -134,7 +134,7 @@ SIP 客户端 ──UDP 5060──► SIP 服务器 (Rust)
                          │ MySQL 8.0 │
                          └─────▲─────┘
                                │
-管理界面 ──HTTP 80──► Nginx ──► REST API :3000
+管理界面 ──HTTP 8030──► Nginx ──► REST API :3000
 ```
 
 ### SIP 客户端配置

@@ -42,19 +42,19 @@ services:
       SIP3__SERVER__SIP_DOMAIN: "sip.air32.cn"
       SIP3__SERVER__PUBLIC_IP: "sip.air32.cn"
       SIP3__SERVER__RTP_PORT_MIN: "10000"
-      SIP3__SERVER__RTP_PORT_MAX: "20000"
+      SIP3__SERVER__RTP_PORT_MAX: "10099"
       SIP3__AUTH__REALM: "sip.air32.cn"
       RUST_LOG: "info"
     ports:
       - "5060:5060/udp"
       - "3000:3000"
-      - "10000-20000:10000-20000/udp"
+      - "10000-10099:10000-10099/udp"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 15s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 30s
 
   frontend:
     build:
@@ -66,7 +66,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "80:80"
+      - "8030:80"
 
 volumes:
   mysql_data:

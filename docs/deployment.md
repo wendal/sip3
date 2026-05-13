@@ -27,9 +27,9 @@ curl http://localhost:3000/api/health
 Services started:
 - MySQL on port 3306
 - SIP server on UDP port 5060
-- RTP media relay on UDP ports 10000–20000
+- RTP media relay on UDP ports 10000–10099
 - REST API on port 3000
-- Admin UI on port 80
+- Admin UI on port 8030
 
 ## Manual Deployment
 
@@ -169,9 +169,9 @@ curl http://localhost:3000/api/calls
 Open these ports:
 ```
 UDP 5060         - SIP signaling
-UDP 10000-20000  - RTP media relay
+UDP 10000-10099  - RTP media relay
 TCP 3000         - REST API (internal only in production)
-TCP 80/443       - Admin UI
+TCP 8030/443     - Admin UI
 TCP 3306         - MySQL (internal only)
 ```
 
@@ -193,7 +193,7 @@ TCP 3306         - MySQL (internal only)
 - Ensure UDP 5060 is reachable from the client
 
 ### No audio after call connects
-- Verify UDP ports 10000–20000 are open and forwarded to the server
+- Verify UDP ports 10000–10099 are open and forwarded to the server
 - Verify `server.public_ip` is the actual public IP address visible to clients
 - Check server logs for "Allocated media relay" and "RTP relay" messages
 
