@@ -45,7 +45,7 @@
           <el-input v-model="form.display_name" placeholder="Alice" />
         </el-form-item>
         <el-form-item label="Domain">
-          <el-input v-model="form.domain" placeholder="sip.example.com" />
+          <el-input v-model="form.domain" placeholder="sip.air32.cn" />
         </el-form-item>
         <el-form-item label="Status" v-if="editingId">
           <el-switch v-model="form.enabled" :active-value="1" :inactive-value="0" />
@@ -70,13 +70,13 @@ const store = useSipStore()
 const dialogVisible = ref(false)
 const editingId = ref(null)
 const submitting = ref(false)
-const form = ref({ username: '', password: '', display_name: '', domain: 'sip.example.com', enabled: 1 })
+const form = ref({ username: '', password: '', display_name: '', domain: 'sip.air32.cn', enabled: 1 })
 
 const formatDate = (d) => d ? new Date(d).toLocaleString() : '-'
 
 const openCreate = () => {
   editingId.value = null
-  form.value = { username: '', password: '', display_name: '', domain: 'sip.example.com', enabled: 1 }
+  form.value = { username: '', password: '', display_name: '', domain: 'sip.air32.cn', enabled: 1 }
   dialogVisible.value = true
 }
 

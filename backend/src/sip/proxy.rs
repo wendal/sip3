@@ -7,6 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
 use super::handler::{base_response, extract_uri, uri_username, PendingDialogs, SipMessage};
+use super::media::{rewrite_sdp, MediaRelay};
 use crate::config::Config;
 
 #[derive(Clone)]
@@ -16,6 +17,7 @@ pub struct Proxy {
     socket: Arc<UdpSocket>,
     /// Shared map of call-id → caller's SocketAddr for response relay.
     pending_dialogs: PendingDialogs,
+    media_relay: MediaRelay,
 }
 
 impl Proxy {
@@ -24,12 +26,14 @@ impl Proxy {
         cfg: Config,
         socket: Arc<UdpSocket>,
         pending_dialogs: PendingDialogs,
+        media_relay: MediaRelay,
     ) -> Self {
         Self {
             pool,
             cfg,
             socket,
             pending_dialogs,
+            media_relay,
         }
     }
 
@@ -95,9 +99,27 @@ impl Proxy {
             dialogs.insert(call_id.clone(), src);
         }
 
-        // Forward INVITE to callee
+        // Allocate an RTP media relay session for this call.
+        // The INVITE SDP is rewritten so the callee will send RTP to relay_a
+        // on this server instead of the caller's private address.
+        let rewritten_body = match self.media_relay.allocate_session(call_id.clone()).await {
+            Ok((relay_port_a, _relay_port_b)) => {
+                let public_ip = self.media_relay.public_ip.as_str();
+                if msg.body.is_empty() {
+                    None
+                } else {
+                    Some(rewrite_sdp(&msg.body, public_ip, relay_port_a))
+                }
+            }
+            Err(e) => {
+                warn!("Failed to allocate media relay for {}: {}", call_id, e);
+                None // proceed without relay; media may fail but signalling works
+            }
+        };
+
+        // Forward INVITE to callee (with rewritten SDP if available)
         let target_addr: SocketAddr = format!("{}:{}", source_ip, source_port).parse()?;
-        let forwarded = self.build_forwarded_invite(msg, &contact_uri, max_fwd - 1);
+        let forwarded = self.build_forwarded_invite(msg, &contact_uri, max_fwd - 1, rewritten_body);
         self.socket
             .send_to(forwarded.as_bytes(), target_addr)
             .await?;
@@ -110,7 +132,13 @@ impl Proxy {
         Ok(base_response(msg, 100, "Trying").build())
     }
 
-    fn build_forwarded_invite(&self, msg: &SipMessage, contact_uri: &str, max_fwd: u32) -> String {
+    fn build_forwarded_invite(
+        &self,
+        msg: &SipMessage,
+        contact_uri: &str,
+        max_fwd: u32,
+        rewritten_body: Option<String>,
+    ) -> String {
         let branch = format!("z9hG4bKproxy{}", rand_token());
         let mut out = format!("INVITE {} SIP/2.0\r\n", contact_uri);
 
@@ -123,8 +151,10 @@ impl Proxy {
         }
         out.push_str(&format!("Max-Forwards: {}\r\n", max_fwd));
 
+        let body = rewritten_body.as_deref().unwrap_or(&msg.body);
+
         for (name, vals) in &msg.headers {
-            if name == "via" || name == "max-forwards" {
+            if name == "via" || name == "max-forwards" || name == "content-length" {
                 continue;
             }
             for val in vals {
@@ -132,8 +162,9 @@ impl Proxy {
             }
         }
 
+        out.push_str(&format!("Content-Length: {}\r\n", body.len()));
         out.push_str("\r\n");
-        out.push_str(&msg.body);
+        out.push_str(body);
         out
     }
 
@@ -186,8 +217,9 @@ impl Proxy {
         .execute(&self.pool)
         .await;
 
-        // Clean up pending dialog entry
+        // Clean up pending dialog and media relay entries
         self.pending_dialogs.lock().await.remove(&call_id);
+        self.media_relay.remove_session(&call_id).await;
 
         if !callee.is_empty() {
             let row: Option<(String, u16)> = sqlx::query_as(
@@ -223,8 +255,9 @@ impl Proxy {
         .execute(&self.pool)
         .await;
 
-        // Clean up pending dialog entry
+        // Clean up pending dialog and media relay entries
         self.pending_dialogs.lock().await.remove(&call_id);
+        self.media_relay.remove_session(&call_id).await;
 
         info!("Call cancelled: {}", call_id);
         Ok(base_response(msg, 200, "OK").build())

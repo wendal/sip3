@@ -20,6 +20,7 @@ SIP3 is a SIP proxy/registrar server built with:
 
 - ✅ SIP REGISTER with RFC 3261 Digest MD5 Authentication
 - ✅ SIP INVITE proxy/relay — looks up registration and forwards calls
+- ✅ **Server-side RTP media relay** — clients behind NAT need no STUN/TURN
 - ✅ Multi-account support via MySQL database
 - ✅ Call Detail Records (CDR) tracking
 - ✅ REST API for account management
@@ -68,10 +69,13 @@ Admin UI ──HTTP 80──► Nginx ──► REST API :3000
 |-----------------------------|----------------------|------------------------|
 | SIP3__SERVER__SIP_HOST      | 0.0.0.0              | SIP bind address       |
 | SIP3__SERVER__SIP_PORT      | 5060                 | SIP UDP port           |
-| SIP3__SERVER__SIP_DOMAIN    | sip.example.com      | SIP domain             |
+| SIP3__SERVER__SIP_DOMAIN    | sip.air32.cn         | SIP domain             |
+| SIP3__SERVER__PUBLIC_IP     | sip.air32.cn         | Public IP for SDP relay|
+| SIP3__SERVER__RTP_PORT_MIN  | 10000                | RTP relay port range   |
+| SIP3__SERVER__RTP_PORT_MAX  | 20000                | RTP relay port range   |
 | SIP3__SERVER__API_PORT      | 3000                 | REST API port          |
 | SIP3__DATABASE__URL         | mysql://...          | MySQL connection URL   |
-| SIP3__AUTH__REALM           | sip.example.com      | Digest auth realm      |
+| SIP3__AUTH__REALM           | sip.air32.cn         | Digest auth realm      |
 | SIP3__AUTH__REGISTRATION_EXPIRES | 3600           | Default reg TTL (sec)  |
 
 ### Development
@@ -102,6 +106,7 @@ SIP3 是一个生产就绪的 SIP 服务器，使用 Rust 构建后端，Vue 3 �
 
 - ✅ SIP REGISTER 支持 RFC 3261 MD5 摘要认证
 - ✅ SIP INVITE 代理/中继 — 查找注册信息并转发通话
+- ✅ **服务端 RTP 媒体中继** — 客户端无公网 IP 无需 STUN/TURN 可直接通话
 - ✅ 通过 MySQL 数据库支持多账户
 - ✅ 通话详细记录（CDR）跟踪
 - ✅ 账户管理 REST API
@@ -138,10 +143,10 @@ SIP 客户端 ──UDP 5060──► SIP 服务器 (Rust)
 
 | 字段     | 值                  |
 |---------|---------------------|
-| SIP 服务器 | 服务器 IP           |
+| SIP 服务器 | sip.air32.cn      |
 | 端口     | 5060                |
 | 协议     | UDP                 |
-| 域名     | sip.example.com     |
+| 域名     | sip.air32.cn        |
 | 用户名   | alice               |
 | 密码     | password123         |
 

@@ -1,14 +1,19 @@
 [server]
 sip_host = "0.0.0.0"
 sip_port = 5060
-sip_domain = "sip.example.com"
+sip_domain = "sip.air32.cn"
 api_host = "0.0.0.0"
 api_port = 3000
+# Public IPv4 address written into rewritten SDP c= lines (required for RTP relay)
+public_ip = "sip.air32.cn"
+# UDP port range for RTP media relay
+rtp_port_min = 10000
+rtp_port_max = 20000
 
 [database]
-url = "mysql://sip3:sip3pass@localhost:3306/sip3"
+url = "mysql://root:root@localhost:3306/sip3"
 max_connections = 10
 
 [auth]
-realm = "sip.example.com"
+realm = "sip.air32.cn"
 registration_expires = 3600

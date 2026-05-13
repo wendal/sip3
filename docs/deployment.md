@@ -27,6 +27,7 @@ curl http://localhost:3000/api/health
 Services started:
 - MySQL on port 3306
 - SIP server on UDP port 5060
+- RTP media relay on UDP ports 10000–20000
 - REST API on port 3000
 - Admin UI on port 80
 
@@ -36,15 +37,17 @@ Services started:
 
 ```sql
 CREATE DATABASE sip3;
-CREATE USER 'sip3'@'%' IDENTIFIED BY 'sip3pass';
-GRANT ALL PRIVILEGES ON sip3.* TO 'sip3'@'%';
-FLUSH PRIVILEGES;
+-- Using root or create a dedicated user:
+-- CREATE USER 'sip3'@'%' IDENTIFIED BY 'sip3pass';
+-- GRANT ALL PRIVILEGES ON sip3.* TO 'sip3'@'%';
+-- FLUSH PRIVILEGES;
 ```
 
 Then run migrations:
 ```bash
-mysql -u sip3 -p sip3 < migrations/001_initial.sql
-mysql -u sip3 -p sip3 < migrations/002_seed.sql
+mysql -u root -proot sip3 < migrations/001_initial.sql
+mysql -u root -proot sip3 < migrations/002_seed.sql
+mysql -u root -proot sip3 < migrations/003_media_sessions.sql
 ```
 
 ### 2. Backend Configuration
@@ -54,23 +57,29 @@ Create `backend/config.toml`:
 [server]
 sip_host = "0.0.0.0"
 sip_port = 5060
-sip_domain = "your-domain.com"
+sip_domain = "sip.air32.cn"
 api_host = "0.0.0.0"
 api_port = 3000
+# Public IPv4 of this server written into rewritten SDP c= lines
+public_ip = "sip.air32.cn"
+# UDP port range for RTP media relay
+rtp_port_min = 10000
+rtp_port_max = 20000
 
 [database]
-url = "mysql://sip3:sip3pass@localhost:3306/sip3"
+url = "mysql://root:root@localhost:3306/sip3"
 max_connections = 10
 
 [auth]
-realm = "your-domain.com"
+realm = "sip.air32.cn"
 registration_expires = 3600
 ```
 
 Or set environment variables (prefix `SIP3__`):
 ```bash
-export SIP3__SERVER__SIP_DOMAIN=your-domain.com
-export SIP3__DATABASE__URL=mysql://sip3:sip3pass@localhost:3306/sip3
+export SIP3__SERVER__SIP_DOMAIN=sip.air32.cn
+export SIP3__SERVER__PUBLIC_IP=sip.air32.cn
+export SIP3__DATABASE__URL=mysql://root:root@localhost:3306/sip3
 ```
 
 ### 3. Build and Run Backend
@@ -91,16 +100,30 @@ npm run build
 npx serve dist -p 80
 ```
 
+## RTP Media Relay
+
+SIP3 includes a built-in server-side RTP relay so clients **do not need STUN or TURN**.
+When an INVITE is proxied, the server:
+
+1. Allocates a pair of UDP ports from the configured `rtp_port_min`–`rtp_port_max` range.
+2. Rewrites the SDP `c=` and `m=audio` fields in the INVITE to point to the server.
+3. When the 200 OK arrives from the callee, rewrites its SDP the same way.
+4. Learns each peer's real public RTP address from the first packet received
+   (symmetric RTP – no SDP address trust required).
+5. Bidirectionally forwards RTP between the two peers.
+
+This means clients behind NAT with no fixed public IP can call each other normally.
+
 ## SIP Client Configuration
 
 Configure your SIP client (Linphone, Zoiper, etc.):
 
 | Field       | Value                    |
 |-------------|--------------------------|
-| SIP Server  | your-server-ip           |
+| SIP Server  | sip.air32.cn             |
 | Port        | 5060                     |
 | Protocol    | UDP                      |
-| Domain      | your-domain.com          |
+| Domain      | sip.air32.cn             |
 | Username    | alice (or other user)    |
 | Password    | password123 (from seed)  |
 | Auth Method | Digest MD5               |
@@ -116,7 +139,7 @@ curl http://localhost:3000/api/accounts
 ```bash
 curl -X POST http://localhost:3000/api/accounts \
   -H 'Content-Type: application/json' \
-  -d '{"username":"dave","password":"secret","display_name":"Dave","domain":"your-domain.com"}'
+  -d '{"username":"dave","password":"secret","display_name":"Dave","domain":"sip.air32.cn"}'
 ```
 
 ### Update account
@@ -145,10 +168,11 @@ curl http://localhost:3000/api/calls
 
 Open these ports:
 ```
-UDP 5060   - SIP signaling
-TCP 3000   - REST API (internal only in production)
-TCP 80/443 - Admin UI
-TCP 3306   - MySQL (internal only)
+UDP 5060         - SIP signaling
+UDP 10000-20000  - RTP media relay
+TCP 3000         - REST API (internal only in production)
+TCP 80/443       - Admin UI
+TCP 3306         - MySQL (internal only)
 ```
 
 ## Production Hardening
@@ -159,18 +183,24 @@ TCP 3306   - MySQL (internal only)
 4. **Database**: Use strong passwords and bind MySQL to 127.0.0.1
 5. **Secrets**: Use Docker secrets or a vault for passwords
 6. **Logging**: Configure log aggregation (ELK, Loki, etc.)
+7. **public_ip**: Set `server.public_ip` to the server's actual public IPv4 address
 
 ## Troubleshooting
 
 ### SIP registration fails
-- Verify the SIP domain matches `auth.realm` in config
+- Verify the SIP domain matches `auth.realm` in config (`sip.air32.cn`)
 - Check account exists: `curl http://localhost:3000/api/accounts`
 - Ensure UDP 5060 is reachable from the client
 
+### No audio after call connects
+- Verify UDP ports 10000–20000 are open and forwarded to the server
+- Verify `server.public_ip` is the actual public IP address visible to clients
+- Check server logs for "Allocated media relay" and "RTP relay" messages
+
 ### Database connection fails
 - Check `DATABASE_URL` is correct
-- Verify MySQL is running: `docker compose ps mysql`
-- Check credentials: `mysql -u sip3 -psip3pass -h localhost sip3`
+- Verify MySQL is running: `systemctl status mysql`
+- Check credentials: `mysql -u root -proot sip3`
 
 ### Build fails
 - Rust: ensure stable toolchain `rustup update stable`

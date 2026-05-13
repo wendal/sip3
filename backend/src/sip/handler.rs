@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
+use super::media::{is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp, MediaRelay};
 use super::proxy::Proxy;
 use super::registrar::Registrar;
 use crate::config::Config;
@@ -345,19 +346,32 @@ pub struct SipHandler {
     registrar: Registrar,
     proxy: Proxy,
     pending_dialogs: PendingDialogs,
+    media_relay: MediaRelay,
 }
 
 impl SipHandler {
     pub fn with_socket(cfg: Config, pool: MySqlPool, socket: Arc<UdpSocket>) -> Self {
         let pending_dialogs: PendingDialogs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let media_relay = MediaRelay::new(
+            cfg.server.public_ip.clone(),
+            cfg.server.rtp_port_min,
+            cfg.server.rtp_port_max,
+        );
         let registrar = Registrar::new(pool.clone(), cfg.clone());
-        let proxy = Proxy::new(pool, cfg.clone(), socket.clone(), pending_dialogs.clone());
+        let proxy = Proxy::new(
+            pool,
+            cfg.clone(),
+            socket.clone(),
+            pending_dialogs.clone(),
+            media_relay.clone(),
+        );
         Self {
             cfg,
             socket,
             registrar,
             proxy,
             pending_dialogs,
+            media_relay,
         }
     }
 
@@ -435,6 +449,21 @@ impl SipHandler {
         if let Some(addr) = caller_addr {
             // Strip the Via we added when forwarding the INVITE.
             let relayed = strip_proxy_via(&msg.raw, &self.cfg.server.sip_domain);
+
+            // On a 200 OK to an INVITE that carries SDP, rewrite the body so the
+            // caller sends its RTP to our relay_b port instead of the callee's
+            // private address.
+            // `rewrite_content_length` returns the complete SIP message (headers + new body).
+            let relayed = if is_invite_200_ok_with_sdp(msg) {
+                if let Some(new_sdp) = self.rewrite_200ok_sdp(&call_id, &msg.body).await {
+                    rewrite_content_length(&relayed, &new_sdp)
+                } else {
+                    relayed
+                }
+            } else {
+                relayed
+            };
+
             if let Err(e) = self.socket.send_to(relayed.as_bytes(), addr).await {
                 warn!("Failed to relay response to {}: {}", addr, e);
             } else {
@@ -449,12 +478,32 @@ impl SipHandler {
             if msg.status_code.is_some_and(|c| c >= 200) {
                 self.pending_dialogs.lock().await.remove(&call_id);
             }
+            // On non-2xx final responses, also remove the media session.
+            if msg.status_code.is_some_and(|c| c >= 300) {
+                self.media_relay.remove_session(&call_id).await;
+            }
         } else {
             debug!(
                 "No pending dialog for call-id {}, dropping response",
                 call_id
             );
         }
+    }
+
+    /// Rewrite the body of a 200 OK response to an INVITE: replace the SDP
+    /// `c=` and `m=audio` fields with the server's relay_b address so the caller
+    /// directs its RTP to our relay port instead of the callee's private IP.
+    async fn rewrite_200ok_sdp(&self, call_id: &str, sdp: &str) -> Option<String> {
+        let sessions = self.media_relay.sessions.lock().await;
+        let session = sessions.get(call_id)?;
+        let relay_port_b = session.relay_port_b;
+        let public_ip = self.media_relay.public_ip.as_str();
+        let new_sdp = rewrite_sdp(sdp, public_ip, relay_port_b);
+        info!(
+            "Rewrote 200 OK SDP for {}: relay_b={}",
+            call_id, relay_port_b
+        );
+        Some(new_sdp)
     }
 
     fn handle_options(&self, msg: &SipMessage) -> Result<String> {
