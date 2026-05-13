@@ -15,6 +15,8 @@ pub struct ServerConfig {
     pub sip_domain: String,
     pub api_host: String,
     pub api_port: u16,
+    /// Comma-separated allowed CORS origins. Empty string = allow all (development).
+    pub allowed_origins: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -27,6 +29,12 @@ pub struct DatabaseConfig {
 pub struct AuthConfig {
     pub realm: String,
     pub registration_expires: u32,
+    /// Max age (seconds) for a nonce before it is rejected. Default: 300.
+    pub nonce_max_age_secs: u64,
+    /// HMAC secret for nonce signing. Empty = random value generated at startup.
+    pub nonce_secret: String,
+    /// If set, all /api/ routes (except /api/health) require `X-Api-Key: <value>`.
+    pub api_key: Option<String>,
 }
 
 impl Config {
@@ -43,10 +51,13 @@ impl Config {
             .set_default("server.sip_domain", "sip.example.com")?
             .set_default("server.api_host", "0.0.0.0")?
             .set_default("server.api_port", 3000)?
+            .set_default("server.allowed_origins", "")?
             .set_default("database.url", "mysql://sip3:sip3pass@localhost:3306/sip3")?
             .set_default("database.max_connections", 10)?
             .set_default("auth.realm", "sip.example.com")?
             .set_default("auth.registration_expires", 3600)?
+            .set_default("auth.nonce_max_age_secs", 300)?
+            .set_default("auth.nonce_secret", "")?
             .build()?;
 
         let cfg: Config = settings.try_deserialize()?;

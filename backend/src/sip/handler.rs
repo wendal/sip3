@@ -10,12 +10,15 @@ use super::proxy::Proxy;
 use super::registrar::Registrar;
 use crate::config::Config;
 
+/// Shared map from SIP Call-ID to the caller's address, used to relay
+/// provisional/final responses from the callee back to the caller.
+pub type PendingDialogs = Arc<tokio::sync::Mutex<HashMap<String, SocketAddr>>>;
+
 /// Parsed SIP request or response
 #[derive(Debug, Clone)]
 pub struct SipMessage {
     pub method: Option<String>,
     pub request_uri: Option<String>,
-    #[allow(dead_code)]
     pub status_code: Option<u16>,
     pub headers: HashMap<String, Vec<String>>,
     pub body: String,
@@ -317,64 +320,47 @@ pub fn md5_hex(input: &str) -> String {
     format!("{:x}", md5::compute(input.as_bytes()))
 }
 
-/// Verify SIP Digest authentication
-#[allow(dead_code)]
-pub fn verify_digest_auth(
-    auth_params: &HashMap<String, String>,
-    password: &str,
-    method: &str,
-) -> bool {
-    let username = auth_params
-        .get("username")
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    let realm = auth_params.get("realm").map(|s| s.as_str()).unwrap_or("");
-    let nonce = auth_params.get("nonce").map(|s| s.as_str()).unwrap_or("");
-    let uri = auth_params.get("uri").map(|s| s.as_str()).unwrap_or("");
-    let response = auth_params
-        .get("response")
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    let qop = auth_params.get("qop").map(|s| s.as_str()).unwrap_or("");
-    let nc = auth_params.get("nc").map(|s| s.as_str()).unwrap_or("");
-    let cnonce = auth_params.get("cnonce").map(|s| s.as_str()).unwrap_or("");
-
-    let ha1 = md5_hex(&format!("{}:{}:{}", username, realm, password));
-    let ha2 = md5_hex(&format!("{}:{}", method, uri));
-
-    let expected = if qop == "auth" {
-        md5_hex(&format!(
-            "{}:{}:{}:{}:{}:{}",
-            ha1, nonce, nc, cnonce, qop, ha2
-        ))
-    } else {
-        md5_hex(&format!("{}:{}:{}", ha1, nonce, ha2))
-    };
-
-    expected == response
+/// Strip the first Via header that contains `sip_domain` (i.e., the one we added
+/// when proxying an INVITE), so the relayed response looks correct to the caller.
+pub fn strip_proxy_via(raw: &str, sip_domain: &str) -> String {
+    let mut removed = false;
+    let mut lines: Vec<&str> = Vec::new();
+    for line in raw.split("\r\n") {
+        if !removed {
+            let lower = line.trim_start().to_lowercase();
+            if (lower.starts_with("via:") || lower.starts_with("v:"))
+                && line.contains(sip_domain)
+            {
+                removed = true;
+                continue;
+            }
+        }
+        lines.push(line);
+    }
+    lines.join("\r\n")
 }
 
 #[derive(Clone)]
 pub struct SipHandler {
-    #[allow(dead_code)]
     cfg: Config,
-    #[allow(dead_code)]
-    pool: MySqlPool,
     socket: Arc<UdpSocket>,
     registrar: Registrar,
     proxy: Proxy,
+    pending_dialogs: PendingDialogs,
 }
 
 impl SipHandler {
     pub fn with_socket(cfg: Config, pool: MySqlPool, socket: Arc<UdpSocket>) -> Self {
+        let pending_dialogs: PendingDialogs =
+            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let registrar = Registrar::new(pool.clone(), cfg.clone());
-        let proxy = Proxy::new(pool.clone(), cfg.clone(), socket.clone());
+        let proxy = Proxy::new(pool, cfg.clone(), socket.clone(), pending_dialogs.clone());
         Self {
             cfg,
-            pool,
             socket,
             registrar,
             proxy,
+            pending_dialogs,
         }
     }
 
@@ -393,7 +379,8 @@ impl SipHandler {
         let method = match &msg.method {
             Some(m) => m.clone(),
             None => {
-                debug!("Ignoring SIP response from {}", src);
+                // SIP response from callee — relay back to the original caller.
+                self.relay_response(&msg).await;
                 return Ok(());
             }
         };
@@ -431,6 +418,43 @@ impl SipHandler {
         }
 
         Ok(())
+    }
+
+    /// Relay a SIP response (e.g. 180, 200) from the callee back to the original caller.
+    async fn relay_response(&self, msg: &SipMessage) {
+        let call_id = match msg.call_id() {
+            Some(id) => id.to_string(),
+            None => {
+                debug!("Dropping SIP response with no Call-ID");
+                return;
+            }
+        };
+
+        let caller_addr = {
+            let dialogs = self.pending_dialogs.lock().await;
+            dialogs.get(&call_id).copied()
+        };
+
+        if let Some(addr) = caller_addr {
+            // Strip the Via we added when forwarding the INVITE.
+            let relayed = strip_proxy_via(&msg.raw, &self.cfg.server.sip_domain);
+            if let Err(e) = self.socket.send_to(relayed.as_bytes(), addr).await {
+                warn!("Failed to relay response to {}: {}", addr, e);
+            } else {
+                debug!(
+                    "Relayed {} response for call {} to caller at {}",
+                    msg.status_code.unwrap_or(0),
+                    call_id,
+                    addr
+                );
+            }
+            // Clean up the dialog entry for final responses (>= 200).
+            if msg.status_code.is_some_and(|c| c >= 200) {
+                self.pending_dialogs.lock().await.remove(&call_id);
+            }
+        } else {
+            debug!("No pending dialog for call-id {}, dropping response", call_id);
+        }
     }
 
     fn handle_options(&self, msg: &SipMessage) -> Result<String> {

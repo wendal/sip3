@@ -1,41 +1,15 @@
+//! Integration tests that exercise the actual production SIP handler code.
+//! Functions are imported directly from the `sip3_backend` library crate.
+
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use sip3_backend::sip::handler::{
+        extract_uri, md5_hex, normalize_header_name, parse_auth_params, strip_proxy_via,
+        uri_username, SipMessage,
+    };
+    use sip3_backend::sip::registrar::{generate_nonce, validate_nonce};
 
-    // Import the handler module items for testing
-    // Since we're in an integration test, we need to reference the crate
-    // These tests exercise SIP message parsing and auth utilities
-
-    fn parse_sip_message(raw: &str) -> (Option<String>, HashMap<String, Vec<String>>) {
-        let mut method = None;
-        let mut headers: HashMap<String, Vec<String>> = HashMap::new();
-        let mut lines = raw.lines();
-
-        if let Some(first) = lines.next() {
-            let parts: Vec<&str> = first.splitn(3, ' ').collect();
-            if !first.starts_with("SIP/2.0") && parts.len() >= 1 {
-                method = Some(parts[0].to_string());
-            }
-        }
-
-        let mut in_headers = true;
-        for line in lines {
-            if !in_headers {
-                break;
-            }
-            if line.is_empty() {
-                in_headers = false;
-                continue;
-            }
-            if let Some(pos) = line.find(':') {
-                let name = line[..pos].trim().to_lowercase();
-                let value = line[pos + 1..].trim().to_string();
-                headers.entry(name).or_default().push(value);
-            }
-        }
-
-        (method, headers)
-    }
+    // ── SipMessage::parse ────────────────────────────────────────────────────
 
     #[test]
     fn test_parse_register_request() {
@@ -50,15 +24,13 @@ mod tests {
                    Content-Length: 0\r\n\
                    \r\n";
 
-        let (method, headers) = parse_sip_message(raw);
-        assert_eq!(method, Some("REGISTER".to_string()));
-        assert!(headers.contains_key("via"));
-        assert!(headers.contains_key("from"));
-        assert!(headers.contains_key("to"));
-        assert!(headers.contains_key("call-id"));
-        assert!(headers.contains_key("cseq"));
-        assert!(headers.contains_key("contact"));
-        assert_eq!(headers["expires"][0], "3600");
+        let msg = SipMessage::parse(raw).expect("parse failed");
+        assert_eq!(msg.method.as_deref(), Some("REGISTER"));
+        assert!(msg.header("via").is_some());
+        assert!(msg.from_header().is_some());
+        assert!(msg.to_header().is_some());
+        assert_eq!(msg.call_id(), Some("a84b4c76e66710@192.168.1.100"));
+        assert_eq!(msg.expires(), Some(3600));
     }
 
     #[test]
@@ -75,10 +47,32 @@ mod tests {
                    \r\n\
                    Test";
 
-        let (method, headers) = parse_sip_message(raw);
-        assert_eq!(method, Some("INVITE".to_string()));
-        assert!(headers.contains_key("content-type"));
+        let msg = SipMessage::parse(raw).expect("parse failed");
+        assert_eq!(msg.method.as_deref(), Some("INVITE"));
+        assert_eq!(msg.request_uri.as_deref(), Some("sip:bob@sip.example.com"));
+        assert!(msg.header("content-type").is_some());
+        assert_eq!(msg.body, "Test");
     }
+
+    #[test]
+    fn test_parse_sip_response() {
+        let raw = "SIP/2.0 180 Ringing\r\n\
+                   Via: SIP/2.0/UDP sip.example.com;branch=z9hG4bKproxy123\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bKorig\r\n\
+                   From: Alice <sip:alice@sip.example.com>;tag=abc\r\n\
+                   To: Bob <sip:bob@sip.example.com>;tag=xyz\r\n\
+                   Call-ID: test-call@192.168.1.100\r\n\
+                   CSeq: 1 INVITE\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
+
+        let msg = SipMessage::parse(raw).expect("parse failed");
+        assert!(msg.method.is_none());
+        assert_eq!(msg.status_code, Some(180));
+        assert_eq!(msg.via_headers().len(), 2);
+    }
+
+    // ── extract_uri ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_extract_uri_from_address() {
@@ -93,23 +87,11 @@ mod tests {
 
         for (input, expected) in cases {
             let result = extract_uri(input);
-            assert_eq!(result, Some(expected.to_string()), "Failed for: {}", input);
+            assert_eq!(result.as_deref(), Some(expected), "Failed for: {}", input);
         }
     }
 
-    fn extract_uri(addr: &str) -> Option<String> {
-        if let Some(start) = addr.find('<') {
-            if let Some(end_rel) = addr[start..].find('>') {
-                return Some(addr[start + 1..start + end_rel].trim().to_string());
-            }
-        }
-        let uri = addr.split(';').next().unwrap_or(addr).trim();
-        if uri.starts_with("sip:") || uri.starts_with("sips:") {
-            Some(uri.to_string())
-        } else {
-            None
-        }
-    }
+    // ── uri_username ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_uri_username_extraction() {
@@ -126,18 +108,11 @@ mod tests {
         }
     }
 
-    fn uri_username(uri: &str) -> Option<String> {
-        let without_scheme = uri.trim_start_matches("sip:").trim_start_matches("sips:");
-        if without_scheme.contains('@') {
-            Some(without_scheme.split('@').next()?.to_string())
-        } else {
-            None
-        }
-    }
+    // ── md5_hex ──────────────────────────────────────────────────────────────
 
     #[test]
     fn test_md5_digest_auth() {
-        // Test MD5 digest computation per RFC 3261
+        // Verify RFC 3261 digest computation: HA1 = MD5(user:realm:pass)
         let username = "alice";
         let realm = "sip.example.com";
         let password = "secret";
@@ -149,18 +124,18 @@ mod tests {
         let ha2 = md5_hex(&format!("{}:{}", method, uri));
         let response = md5_hex(&format!("{}:{}:{}", ha1, nonce, ha2));
 
-        // Verify the response is a 32-char hex string
+        assert_eq!(ha1.len(), 32);
         assert_eq!(response.len(), 32);
         assert!(response.chars().all(|c| c.is_ascii_hexdigit()));
 
-        // Verify that same inputs produce same output (deterministic)
-        let ha1_again = md5_hex(&format!("{}:{}:{}", username, realm, password));
-        assert_eq!(ha1, ha1_again);
+        // Deterministic
+        assert_eq!(
+            ha1,
+            md5_hex(&format!("{}:{}:{}", username, realm, password))
+        );
     }
 
-    fn md5_hex(input: &str) -> String {
-        format!("{:x}", md5::compute(input.as_bytes()))
-    }
+    // ── parse_auth_params ─────────────────────────────────────────────────────
 
     #[test]
     fn test_parse_auth_params() {
@@ -176,56 +151,92 @@ mod tests {
             params.get("nonce").map(|s| s.as_str()),
             Some("abcdef123456")
         );
+        assert_eq!(
+            params.get("uri").map(|s| s.as_str()),
+            Some("sip:sip.example.com")
+        );
     }
 
-    fn parse_auth_params(header: &str) -> HashMap<String, String> {
-        let mut params = HashMap::new();
-        let rest = match header.find(' ') {
-            Some(pos) => &header[pos + 1..],
-            None => return params,
-        };
+    // ── normalize_header_name ─────────────────────────────────────────────────
 
-        for part in rest.split(',') {
-            let part = part.trim();
-            if let Some(eq_pos) = part.find('=') {
-                let key = part[..eq_pos].trim().to_lowercase();
-                let val = part[eq_pos + 1..].trim().trim_matches('"').to_string();
-                params.insert(key, val);
-            }
-        }
-        params
+    #[test]
+    fn test_normalize_header_name() {
+        assert_eq!(normalize_header_name("f"), "from");
+        assert_eq!(normalize_header_name("v"), "via");
+        assert_eq!(normalize_header_name("i"), "call-id");
+        assert_eq!(normalize_header_name("Via"), "via");
+        assert_eq!(normalize_header_name("Content-Length"), "content-length");
+    }
+
+    // ── strip_proxy_via ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_strip_proxy_via() {
+        let raw = "SIP/2.0 180 Ringing\r\n\
+                   Via: SIP/2.0/UDP sip.example.com;branch=z9hG4bKproxy42\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bKorig\r\n\
+                   From: Alice <sip:alice@sip.example.com>;tag=abc\r\n\
+                   To: Bob <sip:bob@sip.example.com>;tag=xyz\r\n\
+                   Call-ID: test@192.168.1.100\r\n\
+                   CSeq: 1 INVITE\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
+
+        let stripped = strip_proxy_via(raw, "sip.example.com");
+        // Our proxy Via should be gone.
+        assert!(!stripped.contains("z9hG4bKproxy42"));
+        // Caller's original Via must survive.
+        assert!(stripped.contains("z9hG4bKorig"));
+    }
+
+    // ── HMAC nonce generation / validation ────────────────────────────────────
+
+    #[test]
+    fn test_nonce_valid() {
+        let secret = "test_secret_key";
+        let nonce = generate_nonce(secret);
+        // Fresh nonce with generous max_age should pass.
+        assert!(validate_nonce(&nonce, secret, 300));
+    }
+
+    #[test]
+    fn test_nonce_wrong_secret() {
+        let nonce = generate_nonce("secret_a");
+        assert!(!validate_nonce(&nonce, "secret_b", 300));
+    }
+
+    #[test]
+    fn test_nonce_tampered() {
+        let secret = "test_secret";
+        let mut nonce = generate_nonce(secret);
+        // Flip one character in the data portion.
+        let bad_char = if nonce.chars().next() == Some('a') { 'b' } else { 'a' };
+        nonce.replace_range(0..1, &bad_char.to_string());
+        assert!(!validate_nonce(&nonce, secret, 300));
+    }
+
+    #[test]
+    fn test_nonce_expired() {
+        let secret = "test_secret";
+        let nonce = generate_nonce(secret);
+        // max_age_secs = 0 → already expired.
+        assert!(!validate_nonce(&nonce, secret, 0));
     }
 
     #[test]
     fn test_sip_response_format() {
-        let response = format!(
-            "SIP/2.0 200 OK\r\n\
-             Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds\r\n\
-             From: Alice <sip:alice@sip.example.com>;tag=1928301774\r\n\
-             To: Alice <sip:alice@sip.example.com>;tag=server-tag\r\n\
-             Call-ID: a84b4c76e66710@192.168.1.100\r\n\
-             CSeq: 314159 REGISTER\r\n\
-             Content-Length: 0\r\n\
-             \r\n"
-        );
+        // Verify that SipMessage::parse correctly identifies a response.
+        let raw = "SIP/2.0 200 OK\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds\r\n\
+                   From: Alice <sip:alice@sip.example.com>;tag=1928301774\r\n\
+                   To: Alice <sip:alice@sip.example.com>;tag=server-tag\r\n\
+                   Call-ID: a84b4c76e66710@192.168.1.100\r\n\
+                   CSeq: 314159 REGISTER\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
 
-        assert!(response.starts_with("SIP/2.0 200 OK"));
-        assert!(response.contains("Content-Length: 0"));
-        assert!(response.ends_with("\r\n\r\n"));
-    }
-
-    #[test]
-    fn test_options_response() {
-        let options_req = "OPTIONS sip:sip.example.com SIP/2.0\r\n\
-                           Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bKoptions\r\n\
-                           From: <sip:alice@sip.example.com>;tag=123\r\n\
-                           To: <sip:sip.example.com>\r\n\
-                           Call-ID: options-test@192.168.1.100\r\n\
-                           CSeq: 1 OPTIONS\r\n\
-                           Content-Length: 0\r\n\
-                           \r\n";
-
-        let (method, _) = parse_sip_message(options_req);
-        assert_eq!(method, Some("OPTIONS".to_string()));
+        let msg = SipMessage::parse(raw).expect("parse failed");
+        assert!(msg.method.is_none());
+        assert_eq!(msg.status_code, Some(200));
     }
 }

@@ -3,14 +3,16 @@
 
 CREATE TABLE IF NOT EXISTS sip_accounts (
     id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    username     VARCHAR(64)  NOT NULL UNIQUE,
+    username     VARCHAR(64)  NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     ha1_hash     VARCHAR(255) COMMENT 'MD5(username:realm:password) for SIP Digest auth',
     display_name VARCHAR(128),
     domain       VARCHAR(128) NOT NULL DEFAULT 'localhost',
     enabled      TINYINT(1)  NOT NULL DEFAULT 1,
     created_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    -- SIP identities are user@domain; the same username can exist in multiple domains.
+    UNIQUE KEY uniq_username_domain (username, domain)
 );
 
 CREATE TABLE IF NOT EXISTS sip_registrations (

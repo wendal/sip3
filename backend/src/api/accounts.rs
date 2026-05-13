@@ -57,12 +57,16 @@ pub async fn create(
     .execute(&state.pool)
     .await
     .map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("Duplicate") || msg.contains("1062") {
-            (StatusCode::CONFLICT, "Username already exists".to_string())
-        } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, msg)
+        // Use SQLx's structured error API instead of string-matching.
+        if let sqlx::Error::Database(db_err) = &e {
+            if db_err.is_unique_violation() {
+                return (
+                    StatusCode::CONFLICT,
+                    "Account already exists for this username and domain".to_string(),
+                );
+            }
         }
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
 
     Ok(Json(
@@ -75,6 +79,7 @@ pub async fn update(
     Path(id): Path<u64>,
     Json(body): Json<UpdateAccount>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    // Fetch the current username (needed to recompute HA1 if password changes).
     let row: Option<(String,)> = sqlx::query_as("SELECT username FROM sip_accounts WHERE id = ?")
         .bind(id)
         .fetch_optional(&state.pool)
@@ -88,48 +93,49 @@ pub async fn update(
 
     let realm = &state.config.auth.realm;
 
-    if let Some(password) = &body.password {
-        let new_hash = bcrypt::hash(password, DEFAULT_COST)
+    // Compute updated hashes only if a new password was provided.
+    let (new_password_hash, new_ha1) = if let Some(password) = &body.password {
+        let hash = bcrypt::hash(password, DEFAULT_COST)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         let ha1 = format!(
             "{:x}",
             md5::compute(format!("{}:{}:{}", username, realm, password).as_bytes())
         );
-        sqlx::query("UPDATE sip_accounts SET password_hash = ?, ha1_hash = ? WHERE id = ?")
-            .bind(&new_hash)
-            .bind(&ha1)
-            .bind(id)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    }
+        (Some(hash), Some(ha1))
+    } else {
+        (None, None)
+    };
 
-    if let Some(display_name) = &body.display_name {
-        sqlx::query("UPDATE sip_accounts SET display_name = ? WHERE id = ?")
-            .bind(display_name)
-            .bind(id)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    }
+    // Single atomic UPDATE using COALESCE so that only provided fields are changed.
+    // NULL bindings leave the existing column value unchanged.
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    if let Some(domain) = &body.domain {
-        sqlx::query("UPDATE sip_accounts SET domain = ? WHERE id = ?")
-            .bind(domain)
-            .bind(id)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    }
+    sqlx::query(
+        "UPDATE sip_accounts SET
+             password_hash = COALESCE(?, password_hash),
+             ha1_hash      = COALESCE(?, ha1_hash),
+             display_name  = COALESCE(?, display_name),
+             domain        = COALESCE(?, domain),
+             enabled       = COALESCE(?, enabled)
+         WHERE id = ?",
+    )
+    .bind(new_password_hash)
+    .bind(new_ha1)
+    .bind(&body.display_name)
+    .bind(&body.domain)
+    .bind(body.enabled)
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    if let Some(enabled) = body.enabled {
-        sqlx::query("UPDATE sip_accounts SET enabled = ? WHERE id = ?")
-            .bind(enabled)
-            .bind(id)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    }
+    tx.commit()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(json!({ "message": "Account updated" })))
 }

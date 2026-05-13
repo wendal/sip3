@@ -1,11 +1,6 @@
 use anyhow::Result;
+use sip3_backend::{api, config, db, sip};
 use tracing::info;
-
-mod api;
-mod config;
-mod db;
-mod models;
-mod sip;
 
 #[tokio::main]
 async fn main() -> Result<()> {

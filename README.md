@@ -30,7 +30,7 @@ SIP3 is a SIP proxy/registrar server built with:
 ### Quick Start
 
 ```bash
-git clone https://github.com/your-org/sip3.git
+git clone https://github.com/wendal/sip3.git
 cd sip3
 docker compose up -d
 ```
@@ -112,7 +112,7 @@ SIP3 是一个生产就绪的 SIP 服务器，使用 Rust 构建后端，Vue 3 �
 ### 快速开始
 
 ```bash
-git clone https://github.com/your-org/sip3.git
+git clone https://github.com/wendal/sip3.git
 cd sip3
 docker compose up -d
 ```

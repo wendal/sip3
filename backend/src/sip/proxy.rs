@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
-use super::handler::{base_response, extract_uri, uri_username, SipMessage};
+use super::handler::{base_response, extract_uri, uri_username, PendingDialogs, SipMessage};
 use crate::config::Config;
 
 #[derive(Clone)]
@@ -14,14 +14,26 @@ pub struct Proxy {
     pool: MySqlPool,
     cfg: Config,
     socket: Arc<UdpSocket>,
+    /// Shared map of call-id → caller's SocketAddr for response relay.
+    pending_dialogs: PendingDialogs,
 }
 
 impl Proxy {
-    pub fn new(pool: MySqlPool, cfg: Config, socket: Arc<UdpSocket>) -> Self {
-        Self { pool, cfg, socket }
+    pub fn new(
+        pool: MySqlPool,
+        cfg: Config,
+        socket: Arc<UdpSocket>,
+        pending_dialogs: PendingDialogs,
+    ) -> Self {
+        Self {
+            pool,
+            cfg,
+            socket,
+            pending_dialogs,
+        }
     }
 
-    pub async fn handle_invite(&self, msg: &SipMessage, _src: SocketAddr) -> Result<String> {
+    pub async fn handle_invite(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
         let request_uri = msg.request_uri.as_deref().unwrap_or("");
         let callee = uri_username(request_uri).unwrap_or_default();
         let caller = msg
@@ -76,6 +88,12 @@ impl Proxy {
         .bind(now)
         .execute(&self.pool)
         .await;
+
+        // Store the caller's address so we can relay callee responses back.
+        {
+            let mut dialogs = self.pending_dialogs.lock().await;
+            dialogs.insert(call_id.clone(), src);
+        }
 
         // Forward INVITE to callee
         let target_addr: SocketAddr = format!("{}:{}", source_ip, source_port).parse()?;
@@ -168,6 +186,9 @@ impl Proxy {
         .execute(&self.pool)
         .await;
 
+        // Clean up pending dialog entry
+        self.pending_dialogs.lock().await.remove(&call_id);
+
         if !callee.is_empty() {
             let row: Option<(String, u16)> = sqlx::query_as(
                 "SELECT source_ip, source_port FROM sip_registrations
@@ -201,6 +222,9 @@ impl Proxy {
         .bind(&call_id)
         .execute(&self.pool)
         .await;
+
+        // Clean up pending dialog entry
+        self.pending_dialogs.lock().await.remove(&call_id);
 
         info!("Call cancelled: {}", call_id);
         Ok(base_response(msg, 200, "OK").build())

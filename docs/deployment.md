@@ -11,7 +11,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/sip3.git
+git clone https://github.com/wendal/sip3.git
 cd sip3
 
 # Start all services

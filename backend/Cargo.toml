@@ -3,6 +3,10 @@ name = "sip3-backend"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "sip3_backend"
+path = "src/lib.rs"
+
 [[bin]]
 name = "sip3-backend"
 path = "src/main.rs"
