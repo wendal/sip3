@@ -79,6 +79,10 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             put(accounts::update).delete(accounts::delete_account),
         )
         .route("/api/registrations", get(status::list_registrations))
+        .route(
+            "/api/registrations/:id",
+            axum::routing::delete(status::delete_registration),
+        )
         .route("/api/calls", get(status::list_calls))
         .layer(middleware::from_fn_with_state(
             state.clone(),

@@ -15,6 +15,17 @@ use crate::config::Config;
 /// provisional/final responses from the callee back to the caller.
 pub type PendingDialogs = Arc<tokio::sync::Mutex<HashMap<String, SocketAddr>>>;
 
+/// State for an established SIP dialog (post-ACK), used to route in-dialog
+/// requests (BYE, INFO) in both directions.
+#[derive(Debug, Clone, Copy)]
+pub struct DialogInfo {
+    pub caller_addr: SocketAddr,
+    pub callee_addr: SocketAddr,
+}
+
+/// Shared map from SIP Call-ID to established dialog info.
+pub type ActiveDialogs = Arc<tokio::sync::Mutex<HashMap<String, DialogInfo>>>;
+
 /// Parsed SIP request or response
 #[derive(Debug, Clone)]
 pub struct SipMessage {
@@ -375,6 +386,12 @@ impl SipHandler {
         }
     }
 
+    /// Expose the media relay so callers (e.g. the server loop) can schedule
+    /// background cleanup without requiring a separate reference.
+    pub fn media_relay(&self) -> &MediaRelay {
+        &self.media_relay
+    }
+
     pub async fn handle_datagram(&self, data: Vec<u8>, src: SocketAddr) -> Result<()> {
         let raw = String::from_utf8_lossy(&data).to_string();
         debug!("Received {} bytes from {}", data.len(), src);
@@ -402,6 +419,7 @@ impl SipHandler {
             "REGISTER" => self.registrar.handle_register(&msg, src).await,
             "INVITE" => self.proxy.handle_invite(&msg, src).await,
             "OPTIONS" => self.handle_options(&msg),
+            "INFO" => self.proxy.handle_info(&msg, src).await,
             "ACK" => {
                 self.proxy.handle_ack(&msg, src).await?;
                 return Ok(());
@@ -411,7 +429,7 @@ impl SipHandler {
             _ => {
                 warn!("Unsupported SIP method: {}", method);
                 Ok(base_response(&msg, 405, "Method Not Allowed")
-                    .header("Allow", "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS")
+                    .header("Allow", "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO")
                     .build())
             }
         };

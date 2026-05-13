@@ -12,14 +12,60 @@ use crate::config::Config;
 /// Excess datagrams are dropped to prevent memory/CPU exhaustion under flood.
 const MAX_CONCURRENT_TASKS: usize = 512;
 
+/// Media sessions older than this are considered stale (no BYE received).
+const MEDIA_SESSION_MAX_AGE_SECS: u64 = 7200; // 2 hours
+
+/// How often to check for stale media sessions.
+const MEDIA_CLEANUP_INTERVAL_SECS: u64 = 60;
+
+/// How often to purge expired registration rows from the database.
+const REG_CLEANUP_INTERVAL_SECS: u64 = 3600; // 1 hour
+
 pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let addr = format!("{}:{}", cfg.server.sip_host, cfg.server.sip_port);
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
     info!("SIP server listening on udp://{}", addr);
 
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
-    let handler = SipHandler::with_socket(cfg, pool, socket.clone());
+    let handler = SipHandler::with_socket(cfg, pool.clone(), socket.clone());
     let mut buf = vec![0u8; 65535];
+
+    // Background task: abort stale media relay sessions (handles client crashes
+    // or network failures where BYE is never received, preventing port leaks).
+    let media_relay_cleanup = handler.media_relay().clone();
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(MEDIA_CLEANUP_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            media_relay_cleanup
+                .cleanup_stale_sessions(MEDIA_SESSION_MAX_AGE_SECS)
+                .await;
+        }
+    });
+
+    // Background task: delete expired registration rows to keep the table tidy.
+    let pool_cleanup = pool.clone();
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(REG_CLEANUP_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            match sqlx::query("DELETE FROM sip_registrations WHERE expires_at < NOW()")
+                .execute(&pool_cleanup)
+                .await
+            {
+                Ok(r) if r.rows_affected() > 0 => {
+                    info!(
+                        "Cleaned up {} expired registration(s)",
+                        r.rows_affected()
+                    );
+                }
+                Err(e) => warn!("Registration cleanup error: {}", e),
+                _ => {}
+            }
+        }
+    });
 
     loop {
         let (len, src) = socket.recv_from(&mut buf).await?;

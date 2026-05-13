@@ -23,6 +23,8 @@ pub struct MediaSession {
     pub relay_port_a: u16,
     /// UDP port that the caller should send RTP to. Server relays → callee.
     pub relay_port_b: u16,
+    /// When this session was created; used for stale-session cleanup.
+    pub created_at: std::time::Instant,
     /// Background task forwarding callee→caller.
     task_a: JoinHandle<()>,
     /// Background task forwarding caller→callee.
@@ -106,6 +108,7 @@ impl MediaRelay {
             caller_rtp,
             relay_port_a,
             relay_port_b,
+            created_at: std::time::Instant::now(),
             task_a,
             task_b,
         };
@@ -123,6 +126,25 @@ impl MediaRelay {
         if let Some(session) = self.sessions.lock().await.remove(call_id) {
             session.abort();
             debug!("Removed media relay for {}", call_id);
+        }
+    }
+
+    /// Abort and remove any sessions older than `max_age_secs`.
+    /// Call this from a periodic background task to prevent port leaks
+    /// when BYE is never received (network failure, client crash, etc.).
+    pub async fn cleanup_stale_sessions(&self, max_age_secs: u64) {
+        let mut sessions = self.sessions.lock().await;
+        let now = std::time::Instant::now();
+        let stale: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| now.duration_since(s.created_at).as_secs() > max_age_secs)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for call_id in stale {
+            if let Some(session) = sessions.remove(&call_id) {
+                session.abort();
+                warn!("Cleaned up stale media session for call_id: {}", call_id);
+            }
         }
     }
 

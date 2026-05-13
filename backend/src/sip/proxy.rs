@@ -6,7 +6,10 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
-use super::handler::{base_response, extract_uri, uri_username, PendingDialogs, SipMessage};
+use super::handler::{
+    base_response, extract_uri, uri_username, ActiveDialogs, DialogInfo, PendingDialogs,
+    SipMessage,
+};
 use super::media::{rewrite_sdp, MediaRelay};
 use crate::config::Config;
 
@@ -18,6 +21,9 @@ pub struct Proxy {
     /// Shared map of call-id → caller's SocketAddr for response relay.
     pending_dialogs: PendingDialogs,
     media_relay: MediaRelay,
+    /// Established dialogs (post-ACK): call-id → (caller_addr, callee_addr).
+    /// Used for bidirectional BYE/INFO routing.
+    active_dialogs: ActiveDialogs,
 }
 
 impl Proxy {
@@ -34,6 +40,7 @@ impl Proxy {
             socket,
             pending_dialogs,
             media_relay,
+            active_dialogs: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -60,6 +67,23 @@ impl Proxy {
             return Ok(base_response(msg, 483, "Too Many Hops").build());
         }
 
+        // Verify the caller has an enabled account in our domain before
+        // proxying any calls — prevents unauthenticated call injection.
+        if caller != "unknown" {
+            let caller_ok: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM sip_accounts WHERE username = ? AND domain = ? AND enabled = 1",
+            )
+            .bind(&caller)
+            .bind(&domain)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if caller_ok.is_none() {
+                warn!("INVITE from unrecognised caller: {}@{}", caller, domain);
+                return Ok(base_response(msg, 403, "Forbidden").build());
+            }
+        }
+
         // Look up callee's registration
         let row: Option<(String, String, u16)> = sqlx::query_as(
             "SELECT contact_uri, source_ip, source_port FROM sip_registrations
@@ -77,6 +101,8 @@ impl Proxy {
                 return Ok(base_response(msg, 404, "Not Found").build());
             }
         };
+
+        let target_addr: SocketAddr = format!("{}:{}", source_ip, source_port).parse()?;
 
         // Record call attempt
         let now = Utc::now().naive_utc();
@@ -99,9 +125,19 @@ impl Proxy {
             dialogs.insert(call_id.clone(), src);
         }
 
+        // Store dialog endpoints for bidirectional routing of subsequent requests.
+        {
+            let mut active = self.active_dialogs.lock().await;
+            active.insert(
+                call_id.clone(),
+                DialogInfo {
+                    caller_addr: src,
+                    callee_addr: target_addr,
+                },
+            );
+        }
+
         // Allocate an RTP media relay session for this call.
-        // The INVITE SDP is rewritten so the callee will send RTP to relay_a
-        // on this server instead of the caller's private address.
         let rewritten_body = match self.media_relay.allocate_session(call_id.clone()).await {
             Ok((relay_port_a, _relay_port_b)) => {
                 let public_ip = self.media_relay.public_ip.as_str();
@@ -113,12 +149,11 @@ impl Proxy {
             }
             Err(e) => {
                 warn!("Failed to allocate media relay for {}: {}", call_id, e);
-                None // proceed without relay; media may fail but signalling works
+                None
             }
         };
 
-        // Forward INVITE to callee (with rewritten SDP if available)
-        let target_addr: SocketAddr = format!("{}:{}", source_ip, source_port).parse()?;
+        // Forward INVITE to callee (with rewritten SDP and Record-Route).
         let forwarded = self.build_forwarded_invite(msg, &contact_uri, max_fwd - 1, rewritten_body);
         self.socket
             .send_to(forwarded.as_bytes(), target_addr)
@@ -151,10 +186,21 @@ impl Proxy {
         }
         out.push_str(&format!("Max-Forwards: {}\r\n", max_fwd));
 
+        // Record-Route so subsequent in-dialog requests (BYE, re-INVITE) are
+        // routed through this proxy, keeping media relay effective.
+        out.push_str(&format!(
+            "Record-Route: <sip:{};lr>\r\n",
+            self.cfg.server.sip_domain
+        ));
+
         let body = rewritten_body.as_deref().unwrap_or(&msg.body);
 
         for (name, vals) in &msg.headers {
-            if name == "via" || name == "max-forwards" || name == "content-length" {
+            if name == "via"
+                || name == "max-forwards"
+                || name == "content-length"
+                || name == "record-route"
+            {
                 continue;
             }
             for val in vals {
@@ -170,9 +216,6 @@ impl Proxy {
 
     pub async fn handle_ack(&self, msg: &SipMessage, _src: SocketAddr) -> Result<()> {
         let call_id = msg.call_id().unwrap_or("").to_string();
-        let request_uri = msg.request_uri.as_deref().unwrap_or("");
-        let callee = uri_username(request_uri).unwrap_or_default();
-        let domain = self.cfg.server.sip_domain.clone();
 
         let _ = sqlx::query(
             "UPDATE sip_calls SET status = 'answered', answered_at = NOW() WHERE call_id = ?",
@@ -181,22 +224,37 @@ impl Proxy {
         .execute(&self.pool)
         .await;
 
-        if !callee.is_empty() {
-            let row: Option<(String, u16)> = sqlx::query_as(
-                "SELECT source_ip, source_port FROM sip_registrations
-                 WHERE username = ? AND domain = ? AND expires_at > NOW()",
-            )
-            .bind(&callee)
-            .bind(&domain)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()
-            .flatten();
+        // Forward ACK to callee using the dialog state (avoids a DB lookup).
+        let callee_addr = {
+            let active = self.active_dialogs.lock().await;
+            active.get(&call_id).map(|d| d.callee_addr)
+        };
 
-            if let Some((ip, port)) = row {
-                if let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                    let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
-                    info!("Forwarded ACK to {} at {}", callee, target);
+        if let Some(target) = callee_addr {
+            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            info!("Forwarded ACK for call {} to {}", call_id, target);
+        } else {
+            // Fallback: look up callee registration from DB.
+            let request_uri = msg.request_uri.as_deref().unwrap_or("");
+            let callee = uri_username(request_uri).unwrap_or_default();
+            let domain = self.cfg.server.sip_domain.clone();
+            if !callee.is_empty() {
+                let row: Option<(String, u16)> = sqlx::query_as(
+                    "SELECT source_ip, source_port FROM sip_registrations
+                     WHERE username = ? AND domain = ? AND expires_at > NOW()",
+                )
+                .bind(&callee)
+                .bind(&domain)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
+
+                if let Some((ip, port)) = row {
+                    if let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
+                        let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+                        info!("Forwarded ACK (fallback) to {} at {}", callee, target);
+                    }
                 }
             }
         }
@@ -204,11 +262,8 @@ impl Proxy {
         Ok(())
     }
 
-    pub async fn handle_bye(&self, msg: &SipMessage, _src: SocketAddr) -> Result<String> {
+    pub async fn handle_bye(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
         let call_id = msg.call_id().unwrap_or("").to_string();
-        let request_uri = msg.request_uri.as_deref().unwrap_or("");
-        let callee = uri_username(request_uri).unwrap_or_default();
-        let domain = self.cfg.server.sip_domain.clone();
 
         let _ = sqlx::query(
             "UPDATE sip_calls SET status = 'ended', ended_at = NOW() WHERE call_id = ?",
@@ -217,26 +272,49 @@ impl Proxy {
         .execute(&self.pool)
         .await;
 
-        // Clean up pending dialog and media relay entries
+        // Use active_dialogs to route BYE in both directions.
+        let forward_addr = {
+            let mut active = self.active_dialogs.lock().await;
+            if let Some(dialog) = active.remove(&call_id) {
+                // Determine the other party based on who sent the BYE.
+                if src == dialog.caller_addr {
+                    Some(dialog.callee_addr)
+                } else {
+                    Some(dialog.caller_addr)
+                }
+            } else {
+                None
+            }
+        };
+
         self.pending_dialogs.lock().await.remove(&call_id);
         self.media_relay.remove_session(&call_id).await;
 
-        if !callee.is_empty() {
-            let row: Option<(String, u16)> = sqlx::query_as(
-                "SELECT source_ip, source_port FROM sip_registrations
-                 WHERE username = ? AND domain = ? AND expires_at > NOW()",
-            )
-            .bind(&callee)
-            .bind(&domain)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()
-            .flatten();
+        if let Some(target) = forward_addr {
+            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            info!("Forwarded BYE for call {} to {}", call_id, target);
+        } else {
+            // Fallback: route by request-URI (legacy, handles restarts).
+            let request_uri = msg.request_uri.as_deref().unwrap_or("");
+            let callee = uri_username(request_uri).unwrap_or_default();
+            let domain = self.cfg.server.sip_domain.clone();
+            if !callee.is_empty() {
+                let row: Option<(String, u16)> = sqlx::query_as(
+                    "SELECT source_ip, source_port FROM sip_registrations
+                     WHERE username = ? AND domain = ? AND expires_at > NOW()",
+                )
+                .bind(&callee)
+                .bind(&domain)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
 
-            if let Some((ip, port)) = row {
-                if let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                    let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
-                    info!("Forwarded BYE to {} at {}", callee, target);
+                if let Some((ip, port)) = row {
+                    if let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
+                        let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+                        info!("Forwarded BYE (fallback) to {} at {}", callee, target);
+                    }
                 }
             }
         }
@@ -255,11 +333,52 @@ impl Proxy {
         .execute(&self.pool)
         .await;
 
-        // Clean up pending dialog and media relay entries
+        // Forward CANCEL to callee so it can stop ringing.
+        let callee_addr = {
+            let active = self.active_dialogs.lock().await;
+            active.get(&call_id).map(|d| d.callee_addr)
+        };
+
+        if let Some(target) = callee_addr {
+            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            info!("Forwarded CANCEL for call {} to {}", call_id, target);
+        } else {
+            warn!("No dialog found to forward CANCEL for call_id: {}", call_id);
+        }
+
+        // Clean up all state for this call.
         self.pending_dialogs.lock().await.remove(&call_id);
+        self.active_dialogs.lock().await.remove(&call_id);
         self.media_relay.remove_session(&call_id).await;
 
         info!("Call cancelled: {}", call_id);
+        Ok(base_response(msg, 200, "OK").build())
+    }
+
+    /// Transparently proxy an in-dialog INFO request (e.g. DTMF) to the other party.
+    pub async fn handle_info(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
+        let call_id = msg.call_id().unwrap_or("").to_string();
+
+        let forward_addr = {
+            let active = self.active_dialogs.lock().await;
+            if let Some(dialog) = active.get(&call_id) {
+                if src == dialog.caller_addr {
+                    Some(dialog.callee_addr)
+                } else {
+                    Some(dialog.caller_addr)
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(target) = forward_addr {
+            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            info!("Forwarded INFO for call {} to {}", call_id, target);
+        } else {
+            warn!("No active dialog for INFO call_id: {}", call_id);
+        }
+
         Ok(base_response(msg, 200, "OK").build())
     }
 }
