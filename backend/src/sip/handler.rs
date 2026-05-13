@@ -328,9 +328,7 @@ pub fn strip_proxy_via(raw: &str, sip_domain: &str) -> String {
     for line in raw.split("\r\n") {
         if !removed {
             let lower = line.trim_start().to_lowercase();
-            if (lower.starts_with("via:") || lower.starts_with("v:"))
-                && line.contains(sip_domain)
-            {
+            if (lower.starts_with("via:") || lower.starts_with("v:")) && line.contains(sip_domain) {
                 removed = true;
                 continue;
             }
@@ -351,8 +349,7 @@ pub struct SipHandler {
 
 impl SipHandler {
     pub fn with_socket(cfg: Config, pool: MySqlPool, socket: Arc<UdpSocket>) -> Self {
-        let pending_dialogs: PendingDialogs =
-            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_dialogs: PendingDialogs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let registrar = Registrar::new(pool.clone(), cfg.clone());
         let proxy = Proxy::new(pool, cfg.clone(), socket.clone(), pending_dialogs.clone());
         Self {
@@ -453,7 +450,10 @@ impl SipHandler {
                 self.pending_dialogs.lock().await.remove(&call_id);
             }
         } else {
-            debug!("No pending dialog for call-id {}, dropping response", call_id);
+            debug!(
+                "No pending dialog for call-id {}, dropping response",
+                call_id
+            );
         }
     }
 

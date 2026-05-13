@@ -210,7 +210,11 @@ mod tests {
         let secret = "test_secret";
         let mut nonce = generate_nonce(secret);
         // Flip one character in the data portion.
-        let bad_char = if nonce.chars().next() == Some('a') { 'b' } else { 'a' };
+        let bad_char = if nonce.chars().next() == Some('a') {
+            'b'
+        } else {
+            'a'
+        };
         nonce.replace_range(0..1, &bad_char.to_string());
         assert!(!validate_nonce(&nonce, secret, 300));
     }

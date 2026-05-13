@@ -81,7 +81,10 @@ impl Registrar {
                 warn!("Stale or invalid nonce for user: {}", username);
                 let new_nonce = generate_nonce(&self.nonce_secret);
                 return Ok(base_response(msg, 401, "Unauthorized")
-                    .header("WWW-Authenticate", &make_www_authenticate(domain, &new_nonce))
+                    .header(
+                        "WWW-Authenticate",
+                        &make_www_authenticate(domain, &new_nonce),
+                    )
                     .build());
             }
 
@@ -159,10 +162,7 @@ impl Registrar {
             // No auth header - send a fresh challenge with a signed nonce.
             let nonce = generate_nonce(&self.nonce_secret);
             Ok(base_response(msg, 401, "Unauthorized")
-                .header(
-                    "WWW-Authenticate",
-                    &make_www_authenticate(domain, &nonce),
-                )
+                .header("WWW-Authenticate", &make_www_authenticate(domain, &nonce))
                 .build())
         }
     }
@@ -243,5 +243,7 @@ fn verify_digest_with_ha1(
 
 fn generate_random_hex(bytes: usize) -> String {
     let mut rng = rand::thread_rng();
-    (0..bytes).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+    (0..bytes)
+        .map(|_| format!("{:02x}", rng.gen::<u8>()))
+        .collect()
 }

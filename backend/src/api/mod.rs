@@ -31,10 +31,7 @@ async fn require_api_key(
     next: Next,
 ) -> Result<Response, StatusCode> {
     if let Some(api_key) = &state.config.auth.api_key {
-        let provided = req
-            .headers()
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok());
+        let provided = req.headers().get("x-api-key").and_then(|v| v.to_str().ok());
         if provided != Some(api_key.as_str()) {
             return Err(StatusCode::UNAUTHORIZED);
         }
@@ -60,10 +57,8 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
                 .allow_methods(Any)
                 .allow_headers(Any)
         } else {
-            let header_values: Vec<axum::http::HeaderValue> = origins
-                .iter()
-                .filter_map(|o| o.parse().ok())
-                .collect();
+            let header_values: Vec<axum::http::HeaderValue> =
+                origins.iter().filter_map(|o| o.parse().ok()).collect();
             CorsLayer::new()
                 .allow_origin(header_values)
                 .allow_methods(Any)

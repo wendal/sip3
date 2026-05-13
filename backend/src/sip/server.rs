@@ -29,7 +29,10 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         let permit = match Arc::clone(&semaphore).try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
-                warn!("Server overloaded ({} concurrent tasks), dropping packet from {}", MAX_CONCURRENT_TASKS, src);
+                warn!(
+                    "Server overloaded ({} concurrent tasks), dropping packet from {}",
+                    MAX_CONCURRENT_TASKS, src
+                );
                 continue;
             }
         };
