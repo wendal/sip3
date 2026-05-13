@@ -75,6 +75,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      packages: write  # This is the critical line to allow pushing to GHCR
 
     steps:
       - uses: actions/checkout@v4
