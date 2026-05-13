@@ -1,0 +1,36 @@
+[package]
+name = "sip3-backend"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sip3_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sip3-backend"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["json"] }
+tower-http = { version = "0.5", features = ["cors"] }
+sqlx = { version = "0.7", features = ["mysql", "runtime-tokio-native-tls", "chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+config = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+bcrypt = "0.15"
+anyhow = "1"
+thiserror = "1"
+tokio-util = "0.7"
+bytes = "1"
+md5 = "0.7"
+rand = "0.8"
+
+[dev-dependencies]
+tokio-test = "0.4"
+md5 = "0.7"
