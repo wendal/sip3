@@ -30,6 +30,7 @@ tokio-util = "0.7"
 bytes = "1"
 md5 = "0.7"
 rand = "0.8"
+jsonwebtoken = "9"
 
 [dev-dependencies]
 tokio-test = "0.4"

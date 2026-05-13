@@ -11,9 +11,15 @@ use crate::models::{Account, CreateAccount, UpdateAccount};
 
 pub async fn list(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
     let accounts: Vec<Account> = sqlx::query_as(
-        "SELECT id, username, password_hash, ha1_hash, display_name, domain, enabled,
-                created_at, updated_at
-         FROM sip_accounts ORDER BY created_at DESC",
+        "SELECT a.id, a.username, a.password_hash, a.ha1_hash, a.display_name,
+                a.domain, a.enabled, a.created_at, a.updated_at,
+                (SELECT MAX(c.started_at) FROM sip_calls c
+                 WHERE c.caller = CONCAT(a.username,'@',a.domain)
+                    OR c.callee = CONCAT(a.username,'@',a.domain)) AS last_call_at,
+                (SELECT COUNT(*) FROM sip_calls c
+                 WHERE c.caller = CONCAT(a.username,'@',a.domain)
+                    OR c.callee = CONCAT(a.username,'@',a.domain)) AS call_count
+         FROM sip_accounts a ORDER BY a.created_at DESC",
     )
     .fetch_all(&state.pool)
     .await

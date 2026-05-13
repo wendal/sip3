@@ -17,6 +17,8 @@ pub struct Account {
     pub enabled: i8,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    pub last_call_at: Option<NaiveDateTime>,
+    pub call_count: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

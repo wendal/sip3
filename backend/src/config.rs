@@ -42,6 +42,10 @@ pub struct AuthConfig {
     pub nonce_secret: String,
     /// If set, all /api/ routes (except /api/health) require `X-Api-Key: <value>`.
     pub api_key: Option<String>,
+    /// Secret for signing JWT tokens. Empty = random value generated at startup.
+    pub jwt_secret: String,
+    /// JWT token lifetime in seconds. Default: 86400 (24 hours).
+    pub jwt_expiry_secs: u64,
 }
 
 impl Config {
@@ -68,6 +72,8 @@ impl Config {
             .set_default("auth.registration_expires", 3600)?
             .set_default("auth.nonce_max_age_secs", 300)?
             .set_default("auth.nonce_secret", "")?
+            .set_default("auth.jwt_secret", "")?
+            .set_default("auth.jwt_expiry_secs", 86400)?
             .build()?;
 
         let cfg: Config = settings.try_deserialize()?;

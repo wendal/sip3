@@ -1,13 +1,12 @@
 import { defineStore } from 'pinia'
-import axios from 'axios'
-
-const api = axios.create({ baseURL: '/api' })
+import api from '../utils/api'
 
 export const useSipStore = defineStore('sip', {
   state: () => ({
     accounts: [],
     registrations: [],
     calls: [],
+    stats: null,
     loading: false,
     error: null,
   }),
@@ -68,11 +67,21 @@ export const useSipStore = defineStore('sip', {
       }
     },
 
+    async fetchStats() {
+      try {
+        const res = await api.get('/stats')
+        this.stats = res.data
+      } catch (e) {
+        this.error = e.message
+      }
+    },
+
     async fetchAll() {
       await Promise.all([
         this.fetchAccounts(),
         this.fetchRegistrations(),
         this.fetchCalls(),
+        this.fetchStats(),
       ])
     },
   },

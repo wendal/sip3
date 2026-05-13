@@ -23,6 +23,13 @@
         <el-table-column prop="created_at" label="Created" width="160">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
+        <el-table-column prop="last_call_at" label="Last Call" width="160">
+          <template #default="{ row }">
+            <span v-if="row.last_call_at">{{ formatDate(row.last_call_at) }}</span>
+            <span v-else style="color: #bbb;">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="call_count" label="Calls" width="70" align="center" />
         <el-table-column label="Actions" width="160">
           <template #default="{ row }">
             <el-button size="small" @click="openEdit(row)">Edit</el-button>
