@@ -7,6 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
 use super::media::{is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp, MediaRelay};
+use super::presence::Presence;
 use super::proxy::Proxy;
 use super::registrar::Registrar;
 use crate::config::Config;
@@ -358,6 +359,7 @@ pub struct SipHandler {
     proxy: Proxy,
     pending_dialogs: PendingDialogs,
     media_relay: MediaRelay,
+    presence: Presence,
 }
 
 impl SipHandler {
@@ -368,7 +370,8 @@ impl SipHandler {
             cfg.server.rtp_port_min,
             cfg.server.rtp_port_max,
         );
-        let registrar = Registrar::new(pool.clone(), cfg.clone());
+        let presence = Presence::new(pool.clone(), cfg.clone(), socket.clone());
+        let registrar = Registrar::new(pool.clone(), cfg.clone(), presence.clone());
         let proxy = Proxy::new(
             pool,
             cfg.clone(),
@@ -383,6 +386,7 @@ impl SipHandler {
             proxy,
             pending_dialogs,
             media_relay,
+            presence,
         }
     }
 
@@ -422,6 +426,7 @@ impl SipHandler {
             "INFO" => self.proxy.handle_info(&msg, src).await,
             "REFER" => self.proxy.handle_refer(&msg, src).await,
             "NOTIFY" => self.proxy.handle_notify(&msg, src).await,
+            "SUBSCRIBE" => self.presence.handle_subscribe(&msg, src).await,
             "ACK" => {
                 self.proxy.handle_ack(&msg, src).await?;
                 return Ok(());
@@ -431,7 +436,10 @@ impl SipHandler {
             _ => {
                 warn!("Unsupported SIP method: {}", method);
                 Ok(base_response(&msg, 405, "Method Not Allowed")
-                    .header("Allow", "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY")
+                    .header(
+                        "Allow",
+                        "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY, SUBSCRIBE",
+                    )
                     .build())
             }
         };
@@ -528,7 +536,10 @@ impl SipHandler {
 
     fn handle_options(&self, msg: &SipMessage) -> Result<String> {
         Ok(base_response(msg, 200, "OK")
-            .header("Allow", "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY")
+            .header(
+                "Allow",
+                "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY, SUBSCRIBE",
+            )
             .header("Accept", "application/sdp")
             .build())
     }

@@ -9,6 +9,7 @@ use super::handler::{
     base_response, extract_uri, make_www_authenticate, md5_hex, parse_auth_params, uri_username,
     SipMessage,
 };
+use super::presence::{Presence, PresenceStatus};
 use crate::config::Config;
 
 #[derive(Clone)]
@@ -17,10 +18,11 @@ pub struct Registrar {
     cfg: Config,
     /// Secret used to sign nonces (HMAC-MD5). Generated at startup if not configured.
     nonce_secret: String,
+    presence: Presence,
 }
 
 impl Registrar {
-    pub fn new(pool: MySqlPool, cfg: Config) -> Self {
+    pub fn new(pool: MySqlPool, cfg: Config, presence: Presence) -> Self {
         let nonce_secret = if cfg.auth.nonce_secret.is_empty() {
             generate_random_hex(16)
         } else {
@@ -30,6 +32,7 @@ impl Registrar {
             pool,
             cfg,
             nonce_secret,
+            presence,
         }
     }
 
@@ -119,6 +122,9 @@ impl Registrar {
                     .execute(&self.pool)
                     .await?;
                 info!("Unregistered user: {}", username);
+                self.presence
+                    .notify_status_change(&username, domain, PresenceStatus::Closed)
+                    .await;
                 return Ok(base_response(msg, 200, "OK").build());
             }
 
@@ -154,6 +160,9 @@ impl Registrar {
                 "Registered {} at {} (expires in {}s)",
                 username, contact_uri, expires
             );
+            self.presence
+                .notify_status_change(&username, domain, PresenceStatus::Open)
+                .await;
 
             Ok(base_response(msg, 200, "OK")
                 .header("Contact", &format!("<{}>;expires={}", contact_uri, expires))

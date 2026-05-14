@@ -22,6 +22,9 @@ const MEDIA_CLEANUP_INTERVAL_SECS: u64 = 60;
 /// How often to purge expired registration rows from the database.
 const REG_CLEANUP_INTERVAL_SECS: u64 = 3600; // 1 hour
 
+/// How often to purge expired presence subscription rows from the database.
+const PRES_CLEANUP_INTERVAL_SECS: u64 = 300; // 5 minutes
+
 /// How often to reload ACL rules from the database.
 const ACL_REFRESH_INTERVAL_SECS: u64 = 60;
 
@@ -79,6 +82,31 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
                     );
                 }
                 Err(e) => warn!("Registration cleanup error: {}", e),
+                _ => {}
+            }
+        }
+    });
+
+    // Background task: delete expired presence subscription rows.
+    let pool_pres = pool.clone();
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(PRES_CLEANUP_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            match sqlx::query(
+                "DELETE FROM sip_presence_subscriptions WHERE expires_at < NOW()",
+            )
+            .execute(&pool_pres)
+            .await
+            {
+                Ok(r) if r.rows_affected() > 0 => {
+                    info!(
+                        "Cleaned up {} expired presence subscription(s)",
+                        r.rows_affected()
+                    );
+                }
+                Err(e) => warn!("Presence cleanup error: {}", e),
                 _ => {}
             }
         }

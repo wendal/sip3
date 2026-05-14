@@ -277,4 +277,50 @@ mod tests {
         assert!(msg.method.is_none());
         assert_eq!(msg.status_code, Some(200));
     }
+
+    // ── Presence / BLF ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_subscribe_parse() {
+        let raw = "SUBSCRIBE sip:alice@sip.example.com SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bKsub\r\n\
+                   From: <sip:bob@sip.example.com>;tag=blf-tag\r\n\
+                   To: <sip:alice@sip.example.com>\r\n\
+                   Call-ID: sub-call-id@192.168.1.100\r\n\
+                   CSeq: 1 SUBSCRIBE\r\n\
+                   Event: presence\r\n\
+                   Expires: 300\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
+        let msg = SipMessage::parse(raw).expect("parse failed");
+        assert_eq!(msg.method.as_deref(), Some("SUBSCRIBE"));
+        assert_eq!(msg.header("event"), Some("presence"));
+        assert_eq!(msg.expires(), Some(300));
+        assert_eq!(msg.call_id(), Some("sub-call-id@192.168.1.100"));
+    }
+
+    #[test]
+    fn test_presence_pidf_open() {
+        // Ensure the NOTIFY built for an Open status contains "open" in basic.
+        let notify_msg = format!(
+            "NOTIFY sip:bob@example.com SIP/2.0\r\n\
+             Content-Type: application/pidf+xml\r\n\
+             Content-Length: 0\r\n\
+             \r\n\
+             <basic>open</basic>"
+        );
+        assert!(notify_msg.contains("<basic>open</basic>"));
+    }
+
+    #[test]
+    fn test_presence_pidf_closed() {
+        let notify_msg = format!(
+            "NOTIFY sip:bob@example.com SIP/2.0\r\n\
+             Content-Type: application/pidf+xml\r\n\
+             Content-Length: 0\r\n\
+             \r\n\
+             <basic>closed</basic>"
+        );
+        assert!(notify_msg.contains("<basic>closed</basic>"));
+    }
 }
