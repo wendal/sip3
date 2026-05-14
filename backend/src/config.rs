@@ -7,6 +7,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub auth: AuthConfig,
     pub acl: AclConfig,
+    pub security: SecurityConfig,
     pub turn: TurnConfig,
 }
 
@@ -71,6 +72,26 @@ pub struct AclConfig {
     pub default_policy: String,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct SecurityConfig {
+    /// Sliding window in seconds for counting auth failures.
+    pub window_secs: u64,
+    /// Failed REGISTER attempts from the same IP needed to trigger a block.
+    pub sip_ip_fail_threshold: u32,
+    /// Failed REGISTER attempts for same IP+username needed to trigger a block.
+    pub sip_user_ip_fail_threshold: u32,
+    /// Failed admin login attempts from the same IP needed to trigger a block.
+    pub api_ip_fail_threshold: u32,
+    /// Failed admin login attempts for same IP+username needed to trigger a block.
+    pub api_user_ip_fail_threshold: u32,
+    /// Block duration in seconds.
+    pub block_secs: u64,
+    /// Whether to persist auto blocks into sip_acl deny rules.
+    pub persist_acl_bans: bool,
+    /// Priority used when inserting auto-generated deny ACL rules.
+    pub acl_ban_priority: i32,
+}
+
 /// Configuration for the built-in TURN credentials API.
 #[derive(Debug, Deserialize, Clone)]
 pub struct TurnConfig {
@@ -121,6 +142,14 @@ impl Config {
             .set_default("auth.jwt_secret", "")?
             .set_default("auth.jwt_expiry_secs", 86400)?
             .set_default("acl.default_policy", "allow")?
+            .set_default("security.window_secs", 300)?
+            .set_default("security.sip_ip_fail_threshold", 20)?
+            .set_default("security.sip_user_ip_fail_threshold", 8)?
+            .set_default("security.api_ip_fail_threshold", 20)?
+            .set_default("security.api_user_ip_fail_threshold", 8)?
+            .set_default("security.block_secs", 900)?
+            .set_default("security.persist_acl_bans", true)?
+            .set_default("security.acl_ban_priority", 5)?
             .set_default("turn.realm", "")?
             .set_default("turn.secret", "")?
             .set_default("turn.ttl_secs", 86400u64)?

@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests {
     use sip3_backend::api::accounts::validate_sip_username;
+    use sip3_backend::security_guard::{AuthSurface, GuardLimits, SecurityGuard};
     use sip3_backend::sip::handler::{
         extract_uri, md5_hex, normalize_header_name, parse_auth_params, strip_proxy_via,
         uri_username, SipMessage,
@@ -318,6 +319,55 @@ mod tests {
         let nonce = generate_nonce(secret);
         // max_age_secs = 0 → already expired.
         assert!(!validate_nonce(&nonce, secret, 0));
+    }
+
+    // ── Security guard (bruteforce protection) ───────────────────────────────
+
+    #[test]
+    fn test_guard_blocks_by_ip_after_threshold() {
+        let limits = GuardLimits {
+            window_secs: 300,
+            ip_fail_threshold: 3,
+            user_ip_fail_threshold: 10,
+            block_secs: 900,
+        };
+        let mut guard = SecurityGuard::new(limits);
+
+        assert!(!guard.is_blocked("198.51.100.10"));
+        assert!(!guard.record_failure(AuthSurface::SipRegister, "198.51.100.10", Some("1001")));
+        assert!(!guard.record_failure(AuthSurface::SipRegister, "198.51.100.10", Some("1002")));
+        assert!(guard.record_failure(AuthSurface::SipRegister, "198.51.100.10", Some("1003")));
+        assert!(guard.is_blocked("198.51.100.10"));
+    }
+
+    #[test]
+    fn test_guard_blocks_by_user_ip_after_threshold() {
+        let limits = GuardLimits {
+            window_secs: 300,
+            ip_fail_threshold: 50,
+            user_ip_fail_threshold: 2,
+            block_secs: 900,
+        };
+        let mut guard = SecurityGuard::new(limits);
+
+        assert!(!guard.record_failure(AuthSurface::SipRegister, "203.0.113.20", Some("1001")));
+        assert!(guard.record_failure(AuthSurface::SipRegister, "203.0.113.20", Some("1001")));
+        assert!(guard.is_blocked("203.0.113.20"));
+    }
+
+    #[test]
+    fn test_guard_success_clears_counters_for_same_user_ip() {
+        let limits = GuardLimits {
+            window_secs: 300,
+            ip_fail_threshold: 20,
+            user_ip_fail_threshold: 2,
+            block_secs: 900,
+        };
+        let mut guard = SecurityGuard::new(limits);
+
+        assert!(!guard.record_failure(AuthSurface::ApiLogin, "203.0.113.30", Some("admin")));
+        guard.record_success("203.0.113.30", Some("admin"));
+        assert!(!guard.record_failure(AuthSurface::ApiLogin, "203.0.113.30", Some("admin")));
     }
 
     // ── ACL ──────────────────────────────────────────────────────────────────

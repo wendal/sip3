@@ -15,6 +15,7 @@ use super::registrar::Registrar;
 use super::transport::TransportRegistry;
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
+use crate::security_guard::{GuardLimits, SecurityGuard};
 
 /// Shared map from SIP Call-ID to the caller's address, used to relay
 /// provisional/final responses from the callee back to the caller.
@@ -396,8 +397,19 @@ impl SipHandler {
             cfg.server.rtp_port_min,
             cfg.server.rtp_port_max,
         ));
+        let security_guard = Arc::new(tokio::sync::Mutex::new(SecurityGuard::new(GuardLimits {
+            window_secs: cfg.security.window_secs,
+            ip_fail_threshold: cfg.security.sip_ip_fail_threshold as usize,
+            user_ip_fail_threshold: cfg.security.sip_user_ip_fail_threshold as usize,
+            block_secs: cfg.security.block_secs,
+        })));
         let presence = Presence::new(pool.clone(), cfg.clone(), socket.clone());
-        let registrar = Registrar::new(pool.clone(), cfg.clone(), presence.clone());
+        let registrar = Registrar::new(
+            pool.clone(),
+            cfg.clone(),
+            presence.clone(),
+            security_guard.clone(),
+        );
         let proxy = Proxy::new(
             pool,
             cfg.clone(),

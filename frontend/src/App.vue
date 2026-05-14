@@ -29,6 +29,10 @@
             <el-icon><Monitor /></el-icon>
             <span>系统状态</span>
           </el-menu-item>
+          <el-menu-item index="/security">
+            <el-icon><WarningFilled /></el-icon>
+            <span>安全监控</span>
+          </el-menu-item>
           <el-menu-item index="/admin-users">
             <el-icon><Setting /></el-icon>
             <span>管理员账号</span>

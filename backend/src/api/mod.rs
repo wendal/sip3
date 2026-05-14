@@ -8,16 +8,20 @@ use axum::{
     Router,
 };
 use sqlx::MySqlPool;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
 use crate::config::Config;
+use crate::security_guard::{GuardLimits, SecurityGuard};
 
 pub mod accounts;
 pub mod acl;
 pub mod admin_users;
 pub mod auth;
 pub mod jwt;
+pub mod security;
 pub mod stats;
 pub mod status;
 pub mod turn;
@@ -29,6 +33,7 @@ pub struct AppState {
     pub config: Config,
     /// Effective JWT signing secret (may be randomly generated at startup if not configured).
     pub jwt_secret: String,
+    pub auth_guard: Arc<Mutex<SecurityGuard>>,
 }
 
 /// Extract a Bearer token from the `Authorization` header.
@@ -121,6 +126,12 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         pool,
         config: cfg.clone(),
         jwt_secret,
+        auth_guard: Arc::new(Mutex::new(SecurityGuard::new(GuardLimits {
+            window_secs: cfg.security.window_secs,
+            ip_fail_threshold: cfg.security.api_ip_fail_threshold as usize,
+            user_ip_fail_threshold: cfg.security.api_user_ip_fail_threshold as usize,
+            block_secs: cfg.security.block_secs,
+        }))),
     };
 
     // JWT-only routes: caller must present a valid Bearer token; claims are injected.
@@ -143,6 +154,11 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         )
         .route("/api/calls", get(status::list_calls))
         .route("/api/stats", get(stats::get_stats))
+        .route("/api/security/events", get(security::list_events))
+        .route("/api/security/blocks", get(security::list_blocks))
+        .route("/api/security/blocks/unblock", post(security::unblock))
+        .route("/api/security/summary", get(security::summary))
+        .route("/api/security/runtime", get(security::runtime_snapshot))
         .route("/api/acl", get(acl::list).post(acl::create))
         .route("/api/acl/:id", put(acl::update).delete(acl::delete_rule))
         .route(

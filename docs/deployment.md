@@ -184,6 +184,7 @@ TCP 3306         - MySQL (internal only)
 5. **Secrets**: Use Docker secrets or a vault for passwords
 6. **Logging**: Configure log aggregation (ELK, Loki, etc.)
 7. **public_ip**: Set `server.public_ip` to the server's actual public IPv4 address
+8. **Built-in bruteforce protection**: tune `SIP3__SECURITY__*` thresholds and keep `/api/security/*` endpoints behind JWT/API-key auth
 
 ## Troubleshooting
 
@@ -191,6 +192,13 @@ TCP 3306         - MySQL (internal only)
 - Verify the SIP domain matches `auth.realm` in config (`sip.air32.cn`)
 - Check account exists: `curl http://localhost:3000/api/accounts`
 - Ensure UDP 5060 is reachable from the client
+
+### Repeated scan / bruteforce attempts
+- Check current auto-bans: `curl -H "Authorization: Bearer <JWT>" http://localhost:3000/api/security/blocks`
+- Check recent security events: `curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/security/events?limit=100"`
+- Check runtime troubleshooting snapshot: `curl -H "Authorization: Bearer <JWT>" http://localhost:3000/api/security/runtime`
+- Manually unblock one CIDR if needed:
+  `curl -X POST -H "Authorization: Bearer <JWT>" -H "Content-Type: application/json" -d '{"cidr":"203.0.113.10/32"}' http://localhost:3000/api/security/blocks/unblock`
 
 ### No audio after call connects
 - Verify UDP ports 10000–10099 are open and forwarded to the server

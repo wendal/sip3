@@ -6,6 +6,7 @@ import Login from '../views/Login.vue'
 import AdminUsers from '../views/AdminUsers.vue'
 import Acl from '../views/Acl.vue'
 import Phone from '../views/Phone.vue'
+import Security from '../views/Security.vue'
 
 const routes = [
   { path: '/login', component: Login, meta: { public: true } },
@@ -16,6 +17,7 @@ const routes = [
   { path: '/status', component: Status },
   { path: '/admin-users', component: AdminUsers },
   { path: '/acl', component: Acl },
+  { path: '/security', component: Security },
 ]
 
 const router = createRouter({

@@ -1,9 +1,16 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use bcrypt::verify;
 use serde_json::{json, Value};
+use std::net::IpAddr;
+use tracing::warn;
 
 use super::{jwt, AppState};
 use crate::models::AdminUser;
+use crate::security_guard::{persist_security_event, AuthSurface, SecurityEventType};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct LoginRequest {
@@ -15,6 +22,7 @@ pub struct LoginRequest {
 /// Verifies admin credentials and returns a signed JWT.
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     if body.username.is_empty() || body.password.is_empty() {
@@ -22,6 +30,24 @@ pub async fn login(
             StatusCode::BAD_REQUEST,
             "username and password are required".to_string(),
         ));
+    }
+
+    let source_ip = extract_client_ip(&headers);
+    if state.auth_guard.lock().await.is_blocked(&source_ip) {
+        warn!("Blocked admin login attempt from {}", source_ip);
+        if let Err(e) = persist_security_event(
+            &state.pool,
+            AuthSurface::ApiLogin,
+            SecurityEventType::AuthFailed,
+            &source_ip,
+            Some(&body.username),
+            "api login blocked by guard",
+        )
+        .await
+        {
+            warn!("Failed to persist security event: {}", e);
+        }
+        return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()));
     }
 
     let user: Option<AdminUser> =
@@ -33,14 +59,125 @@ pub async fn login(
 
     let user = match user {
         Some(u) => u,
-        None => return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string())),
+        None => {
+            let blocked = state.auth_guard.lock().await.record_failure(
+                AuthSurface::ApiLogin,
+                &source_ip,
+                Some(&body.username),
+            );
+            if let Err(e) = persist_security_event(
+                &state.pool,
+                AuthSurface::ApiLogin,
+                SecurityEventType::AuthFailed,
+                &source_ip,
+                Some(&body.username),
+                "api login failed: user not found",
+            )
+            .await
+            {
+                warn!("Failed to persist security event: {}", e);
+            }
+            if blocked && state.config.security.persist_acl_bans {
+                if let Some(ip) = parse_ip(&source_ip) {
+                    if let Err(e) = persist_acl_ban(
+                        &state.pool,
+                        ip,
+                        state.config.security.acl_ban_priority,
+                        "auto-ban: api login brute force",
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Failed to persist API login auto-ban ACL for {}: {}",
+                            source_ip, e
+                        );
+                    }
+                }
+                if let Err(e) = persist_security_event(
+                    &state.pool,
+                    AuthSurface::ApiLogin,
+                    SecurityEventType::IpBlocked,
+                    &source_ip,
+                    Some(&body.username),
+                    "api login source blocked by threshold",
+                )
+                .await
+                {
+                    warn!("Failed to persist security event: {}", e);
+                }
+            }
+            return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()));
+        }
     };
 
     let valid = verify(&body.password, &user.password_hash)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if !valid {
+        let blocked = state.auth_guard.lock().await.record_failure(
+            AuthSurface::ApiLogin,
+            &source_ip,
+            Some(&body.username),
+        );
+        if let Err(e) = persist_security_event(
+            &state.pool,
+            AuthSurface::ApiLogin,
+            SecurityEventType::AuthFailed,
+            &source_ip,
+            Some(&body.username),
+            "api login failed: bad password",
+        )
+        .await
+        {
+            warn!("Failed to persist security event: {}", e);
+        }
+        if blocked && state.config.security.persist_acl_bans {
+            if let Some(ip) = parse_ip(&source_ip) {
+                if let Err(e) = persist_acl_ban(
+                    &state.pool,
+                    ip,
+                    state.config.security.acl_ban_priority,
+                    "auto-ban: api login brute force",
+                )
+                .await
+                {
+                    warn!(
+                        "Failed to persist API login auto-ban ACL for {}: {}",
+                        source_ip, e
+                    );
+                }
+            }
+            if let Err(e) = persist_security_event(
+                &state.pool,
+                AuthSurface::ApiLogin,
+                SecurityEventType::IpBlocked,
+                &source_ip,
+                Some(&body.username),
+                "api login source blocked by threshold",
+            )
+            .await
+            {
+                warn!("Failed to persist security event: {}", e);
+            }
+        }
         return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()));
+    }
+    state
+        .auth_guard
+        .lock()
+        .await
+        .record_success(&source_ip, Some(&body.username));
+    if let Err(e) = persist_security_event(
+        &state.pool,
+        AuthSurface::ApiLogin,
+        SecurityEventType::AuthSucceeded,
+        &source_ip,
+        Some(&body.username),
+        "api login succeeded",
+    )
+    .await
+    {
+        warn!("Failed to persist security event: {}", e);
     }
 
     let token = jwt::issue_token(
@@ -55,6 +192,52 @@ pub async fn login(
         "username": user.username,
         "expires_in": state.config.auth.jwt_expiry_secs,
     })))
+}
+
+fn extract_client_ip(headers: &HeaderMap) -> String {
+    if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = forwarded.split(',').map(str::trim).find(|s| !s.is_empty()) {
+            if parse_ip(first).is_some() {
+                return first.to_string();
+            }
+        }
+    }
+    if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        if parse_ip(real_ip).is_some() {
+            return real_ip.to_string();
+        }
+    }
+    "0.0.0.0".to_string()
+}
+
+fn parse_ip(raw: &str) -> Option<IpAddr> {
+    raw.parse().ok()
+}
+
+async fn persist_acl_ban(
+    pool: &sqlx::MySqlPool,
+    ip: IpAddr,
+    priority: i32,
+    description: &str,
+) -> anyhow::Result<()> {
+    let cidr = match ip {
+        IpAddr::V4(v4) => format!("{}/32", v4),
+        IpAddr::V6(v6) => format!("{}/128", v6),
+    };
+    sqlx::query(
+        "INSERT INTO sip_acl (action, cidr, description, priority, enabled)
+         SELECT 'deny', ?, ?, ?, 1
+         WHERE NOT EXISTS (
+             SELECT 1 FROM sip_acl WHERE action = 'deny' AND cidr = ? AND enabled = 1
+         )",
+    )
+    .bind(&cidr)
+    .bind(description)
+    .bind(priority)
+    .bind(&cidr)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]

@@ -118,6 +118,11 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | DELETE | /api/registrations/:id     | Force de-register                     |
 | GET    | /api/calls                 | List call records (CDR)               |
 | GET    | /api/stats                 | Dashboard statistics                  |
+| GET    | /api/security/summary      | Security summary (24h failures/blocks) |
+| GET    | /api/security/events       | Security event timeline               |
+| GET    | /api/security/blocks       | Active auto-ban ACL entries           |
+| POST   | /api/security/blocks/unblock | Disable one auto-ban entry          |
+| GET    | /api/security/runtime      | Runtime troubleshooting snapshot      |
 | GET    | /api/acl                   | List IP ACL rules                     |
 | POST   | /api/acl                   | Create ACL rule                       |
 | PUT    | /api/acl/:id               | Update ACL rule                       |
@@ -144,6 +149,14 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | SIP3__DATABASE__URL               | mysql://...    | MySQL connection URL                |
 | SIP3__AUTH__REALM                 | sip.air32.cn   | Digest auth realm                  |
 | SIP3__AUTH__REGISTRATION_EXPIRES  | 3600           | Default registration TTL (seconds) |
+| SIP3__SECURITY__WINDOW_SECS       | 300            | Sliding window for auth-fail counters |
+| SIP3__SECURITY__SIP_IP_FAIL_THRESHOLD | 20        | REGISTER failures/IP before block      |
+| SIP3__SECURITY__SIP_USER_IP_FAIL_THRESHOLD | 8    | REGISTER failures/IP+user before block |
+| SIP3__SECURITY__API_IP_FAIL_THRESHOLD | 20        | Admin login failures/IP before block    |
+| SIP3__SECURITY__API_USER_IP_FAIL_THRESHOLD | 8    | Admin login failures/IP+user before block |
+| SIP3__SECURITY__BLOCK_SECS        | 900            | Auto-ban duration (seconds)            |
+| SIP3__SECURITY__PERSIST_ACL_BANS  | true           | Persist auto-ban into `sip_acl`        |
+| SIP3__SECURITY__ACL_BAN_PRIORITY  | 5              | Priority for auto-ban ACL rules        |
 | SIP3__TURN__REALM                 | sip.air32.cn   | TURN realm                         |
 | SIP3__TURN__SECRET                | (empty)        | TURN HMAC-SHA1 shared secret       |
 | SIP3__TURN__TTL_SECONDS           | 86400          | TURN credential lifetime (seconds) |

@@ -2,7 +2,9 @@ use anyhow::Result;
 use chrono::{Duration, Utc};
 use rand::Rng;
 use sqlx::MySqlPool;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use super::handler::{
@@ -11,6 +13,9 @@ use super::handler::{
 };
 use super::presence::{Presence, PresenceStatus};
 use crate::config::Config;
+use crate::security_guard::{
+    persist_security_event, AuthSurface, SecurityEventType, SecurityGuard,
+};
 
 pub const ACCOUNT_LOOKUP_SQL: &str = "\
     SELECT COALESCE(ha1_hash, ''), enabled
@@ -23,10 +28,16 @@ pub struct Registrar {
     /// Secret used to sign nonces (HMAC-MD5). Generated at startup if not configured.
     nonce_secret: String,
     presence: Presence,
+    guard: Arc<Mutex<SecurityGuard>>,
 }
 
 impl Registrar {
-    pub fn new(pool: MySqlPool, cfg: Config, presence: Presence) -> Self {
+    pub fn new(
+        pool: MySqlPool,
+        cfg: Config,
+        presence: Presence,
+        guard: Arc<Mutex<SecurityGuard>>,
+    ) -> Self {
         let nonce_secret = if cfg.auth.nonce_secret.is_empty() {
             generate_random_hex(16)
         } else {
@@ -37,6 +48,7 @@ impl Registrar {
             cfg,
             nonce_secret,
             presence,
+            guard,
         }
     }
 
@@ -50,32 +62,13 @@ impl Registrar {
             return Ok(base_response(msg, 400, "Bad Request").build());
         }
 
-        // Account lookup by (username, domain) so the same username can exist in
-        // multiple domains (AoR = user@domain).
-        let domain = &self.cfg.server.sip_domain;
-        let row: Option<(String, i8)> = sqlx::query_as(ACCOUNT_LOOKUP_SQL)
-            .bind(&username)
-            .bind(domain)
-            .fetch_optional(&self.pool)
-            .await?;
-
-        let (ha1, enabled) = match row {
-            Some(r) => r,
-            None => {
-                warn!("REGISTER for unknown user: {}@{}", username, domain);
-                return Ok(base_response(msg, 404, "Not Found").build());
-            }
-        };
-
-        if enabled == 0 {
+        let source_ip = src.ip().to_string();
+        if self.guard.lock().await.is_blocked(&source_ip) {
+            warn!("REGISTER blocked by guard from {}", source_ip);
             return Ok(base_response(msg, 403, "Forbidden").build());
         }
 
-        if ha1.is_empty() {
-            warn!("Account {} has no ha1_hash configured", username);
-            return Ok(base_response(msg, 500, "Internal Server Error").build());
-        }
-
+        let domain = &self.cfg.server.sip_domain;
         if let Some(auth_header) = msg.authorization() {
             let auth_params = parse_auth_params(auth_header);
 
@@ -83,24 +76,134 @@ impl Registrar {
             let nonce = auth_params.get("nonce").map(|s| s.as_str()).unwrap_or("");
             if !validate_nonce(nonce, &self.nonce_secret, self.cfg.auth.nonce_max_age_secs) {
                 warn!("Stale or invalid nonce for user: {}", username);
-                let new_nonce = generate_nonce(&self.nonce_secret);
-                return Ok(base_response(msg, 401, "Unauthorized")
-                    .header(
-                        "WWW-Authenticate",
-                        &make_www_authenticate(domain, &new_nonce),
+                let blocked = self.guard.lock().await.record_failure(
+                    AuthSurface::SipRegister,
+                    &source_ip,
+                    Some(&username),
+                );
+                if let Err(e) = persist_security_event(
+                    &self.pool,
+                    AuthSurface::SipRegister,
+                    SecurityEventType::AuthFailed,
+                    &source_ip,
+                    Some(&username),
+                    "register auth failed: stale or invalid nonce",
+                )
+                .await
+                {
+                    warn!("Failed to persist security event: {}", e);
+                }
+                if blocked && self.cfg.security.persist_acl_bans {
+                    if let Err(e) = persist_acl_ban(
+                        &self.pool,
+                        src.ip(),
+                        self.cfg.security.acl_ban_priority,
+                        "auto-ban: sip register brute force",
                     )
-                    .build());
+                    .await
+                    {
+                        warn!(
+                            "Failed to persist REGISTER auto-ban ACL for {}: {}",
+                            source_ip, e
+                        );
+                    }
+                    if let Err(e) = persist_security_event(
+                        &self.pool,
+                        AuthSurface::SipRegister,
+                        SecurityEventType::IpBlocked,
+                        &source_ip,
+                        Some(&username),
+                        "register source blocked by threshold",
+                    )
+                    .await
+                    {
+                        warn!("Failed to persist security event: {}", e);
+                    }
+                }
+                return unauthorized_response(msg, domain, &self.nonce_secret);
             }
 
-            if !verify_digest_with_ha1(&auth_params, &ha1, "REGISTER") {
+            // Account lookup by (username, domain) so the same username can exist in
+            // multiple domains (AoR = user@domain).
+            let row: Option<(String, i8)> = sqlx::query_as(ACCOUNT_LOOKUP_SQL)
+                .bind(&username)
+                .bind(domain)
+                .fetch_optional(&self.pool)
+                .await?;
+            let account_ok =
+                matches!(&row, Some((ha1, enabled)) if *enabled != 0 && !ha1.is_empty());
+
+            let digest_ok = if let Some((ha1, enabled)) = &row {
+                *enabled != 0
+                    && !ha1.is_empty()
+                    && verify_digest_with_ha1(&auth_params, ha1, "REGISTER")
+            } else {
+                false
+            };
+
+            if !account_ok || !digest_ok {
                 warn!("Authentication failed for user: {}", username);
-                let new_nonce = generate_nonce(&self.nonce_secret);
-                return Ok(base_response(msg, 401, "Unauthorized")
-                    .header(
-                        "WWW-Authenticate",
-                        &make_www_authenticate(domain, &new_nonce),
+                let blocked = self.guard.lock().await.record_failure(
+                    AuthSurface::SipRegister,
+                    &source_ip,
+                    Some(&username),
+                );
+                if let Err(e) = persist_security_event(
+                    &self.pool,
+                    AuthSurface::SipRegister,
+                    SecurityEventType::AuthFailed,
+                    &source_ip,
+                    Some(&username),
+                    "register auth failed: invalid account or digest",
+                )
+                .await
+                {
+                    warn!("Failed to persist security event: {}", e);
+                }
+                if blocked && self.cfg.security.persist_acl_bans {
+                    if let Err(e) = persist_acl_ban(
+                        &self.pool,
+                        src.ip(),
+                        self.cfg.security.acl_ban_priority,
+                        "auto-ban: sip register brute force",
                     )
-                    .build());
+                    .await
+                    {
+                        warn!(
+                            "Failed to persist REGISTER auto-ban ACL for {}: {}",
+                            source_ip, e
+                        );
+                    }
+                    if let Err(e) = persist_security_event(
+                        &self.pool,
+                        AuthSurface::SipRegister,
+                        SecurityEventType::IpBlocked,
+                        &source_ip,
+                        Some(&username),
+                        "register source blocked by threshold",
+                    )
+                    .await
+                    {
+                        warn!("Failed to persist security event: {}", e);
+                    }
+                }
+                return unauthorized_response(msg, domain, &self.nonce_secret);
+            }
+            self.guard
+                .lock()
+                .await
+                .record_success(&source_ip, Some(&username));
+            if let Err(e) = persist_security_event(
+                &self.pool,
+                AuthSurface::SipRegister,
+                SecurityEventType::AuthSucceeded,
+                &source_ip,
+                Some(&username),
+                "register auth succeeded",
+            )
+            .await
+            {
+                warn!("Failed to persist security event: {}", e);
             }
 
             // Auth OK - process registration
@@ -132,7 +235,6 @@ impl Registrar {
             let contact_uri = extract_uri(contact).unwrap_or_else(|| contact.to_string());
             let user_agent = msg.user_agent().unwrap_or("");
             let expires_at = (Utc::now() + Duration::seconds(expires as i64)).naive_utc();
-            let source_ip = src.ip().to_string();
             let source_port = src.port();
 
             sqlx::query(
@@ -170,12 +272,42 @@ impl Registrar {
                 .build())
         } else {
             // No auth header - send a fresh challenge with a signed nonce.
-            let nonce = generate_nonce(&self.nonce_secret);
-            Ok(base_response(msg, 401, "Unauthorized")
-                .header("WWW-Authenticate", &make_www_authenticate(domain, &nonce))
-                .build())
+            unauthorized_response(msg, domain, &self.nonce_secret)
         }
     }
+}
+
+fn unauthorized_response(msg: &SipMessage, domain: &str, nonce_secret: &str) -> Result<String> {
+    let nonce = generate_nonce(nonce_secret);
+    Ok(base_response(msg, 401, "Unauthorized")
+        .header("WWW-Authenticate", &make_www_authenticate(domain, &nonce))
+        .build())
+}
+
+async fn persist_acl_ban(
+    pool: &MySqlPool,
+    ip: IpAddr,
+    priority: i32,
+    description: &str,
+) -> Result<()> {
+    let cidr = match ip {
+        IpAddr::V4(v4) => format!("{}/32", v4),
+        IpAddr::V6(v6) => format!("{}/128", v6),
+    };
+    sqlx::query(
+        "INSERT INTO sip_acl (action, cidr, description, priority, enabled)
+         SELECT 'deny', ?, ?, ?, 1
+         WHERE NOT EXISTS (
+             SELECT 1 FROM sip_acl WHERE action = 'deny' AND cidr = ? AND enabled = 1
+         )",
+    )
+    .bind(&cidr)
+    .bind(description)
+    .bind(priority)
+    .bind(&cidr)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Generate an HMAC-MD5 signed nonce:
