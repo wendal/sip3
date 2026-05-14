@@ -7,6 +7,7 @@ mod tests {
         extract_uri, md5_hex, normalize_header_name, parse_auth_params, strip_proxy_via,
         uri_username, SipMessage,
     };
+    use sip3_backend::sip::media::{rewrite_sdp, sdp_audio_port, sdp_has_crypto};
     use sip3_backend::sip::registrar::{generate_nonce, validate_nonce};
 
     // ── SipMessage::parse ────────────────────────────────────────────────────
@@ -322,5 +323,47 @@ mod tests {
              <basic>closed</basic>"
         );
         assert!(notify_msg.contains("<basic>closed</basic>"));
+    }
+
+    // ── SRTP / SDES ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_srtp_sdp_crypto_preserved() {
+        // Verify that rewrite_sdp passes a=crypto: lines through unchanged.
+        let sdp = "v=0\r\n\
+                   o=alice 1234 1 IN IP4 192.168.1.100\r\n\
+                   s=-\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 49170 RTP/SAVP 0\r\n\
+                   a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKioqKioqKioqKioqKio=\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n";
+
+        let rewritten = rewrite_sdp(sdp, "10.0.0.1", 10000);
+
+        // IP and port must be rewritten.
+        assert!(rewritten.contains("c=IN IP4 10.0.0.1"));
+        assert!(rewritten.contains("m=audio 10000 RTP/SAVP 0"));
+
+        // Crypto attribute must be preserved verbatim.
+        assert!(rewritten.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKioqKioqKioqKioqKio="));
+    }
+
+    #[test]
+    fn test_srtp_sdp_has_crypto_detection() {
+        let sdp_with_crypto = "m=audio 49170 RTP/SAVP 0\r\n\
+                                a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:key==\r\n";
+        let sdp_plain = "m=audio 49170 RTP/AVP 0\r\n\
+                         a=rtpmap:0 PCMU/8000\r\n";
+
+        assert!(sdp_has_crypto(sdp_with_crypto));
+        assert!(!sdp_has_crypto(sdp_plain));
+    }
+
+    #[test]
+    fn test_srtp_savp_port_extraction() {
+        // sdp_audio_port must work with RTP/SAVP (SRTP) m= lines.
+        let sdp = "m=audio 12345 RTP/SAVP 0 8\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:key==\r\n";
+        assert_eq!(sdp_audio_port(sdp), Some(12345));
     }
 }
