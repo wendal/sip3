@@ -78,8 +78,8 @@ pub async fn login(
                 warn!("Failed to persist security event: {}", e);
             }
             if blocked && state.config.security.persist_acl_bans {
-                if let Some(ip) = parse_ip(&source_ip) {
-                    if let Err(e) = persist_acl_ban(
+                if let Some(ip) = parse_ip(&source_ip)
+                    && let Err(e) = persist_acl_ban(
                         &state.pool,
                         ip,
                         state.config.security.acl_ban_priority,
@@ -92,7 +92,6 @@ pub async fn login(
                             source_ip, e
                         );
                     }
-                }
                 if let Err(e) = persist_security_event(
                     &state.pool,
                     AuthSurface::ApiLogin,
@@ -132,8 +131,8 @@ pub async fn login(
             warn!("Failed to persist security event: {}", e);
         }
         if blocked && state.config.security.persist_acl_bans {
-            if let Some(ip) = parse_ip(&source_ip) {
-                if let Err(e) = persist_acl_ban(
+            if let Some(ip) = parse_ip(&source_ip)
+                && let Err(e) = persist_acl_ban(
                     &state.pool,
                     ip,
                     state.config.security.acl_ban_priority,
@@ -146,7 +145,6 @@ pub async fn login(
                         source_ip, e
                     );
                 }
-            }
             if let Err(e) = persist_security_event(
                 &state.pool,
                 AuthSurface::ApiLogin,
@@ -195,18 +193,15 @@ pub async fn login(
 }
 
 fn extract_client_ip(headers: &HeaderMap) -> String {
-    if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = forwarded.split(',').map(str::trim).find(|s| !s.is_empty()) {
-            if parse_ip(first).is_some() {
+    if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(first) = forwarded.split(',').map(str::trim).find(|s| !s.is_empty())
+            && parse_ip(first).is_some() {
                 return first.to_string();
             }
-        }
-    }
-    if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-        if parse_ip(real_ip).is_some() {
+    if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok())
+        && parse_ip(real_ip).is_some() {
             return real_ip.to_string();
         }
-    }
     "0.0.0.0".to_string()
 }
 

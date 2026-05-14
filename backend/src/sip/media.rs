@@ -204,11 +204,10 @@ async fn run_relay_loop(
         }
 
         // Forward to the peer if its address is known.
-        if let Some(dst) = *peer_addr.lock().await {
-            if let Err(e) = recv_socket.send_to(&buf[..len], dst).await {
+        if let Some(dst) = *peer_addr.lock().await
+            && let Err(e) = recv_socket.send_to(&buf[..len], dst).await {
                 warn!("RTP relay forward error to {}: {}", dst, e);
             }
-        }
     }
 }
 

@@ -4,7 +4,7 @@
 
 - Docker Engine 24+ and Docker Compose v2
 - MySQL 8.0 (if deploying without Docker)
-- Rust 1.82+ (for building from source)
+- Rust 1.95+ (for building from source; required for Rust 2024 edition)
 - Node.js 20+ (for frontend from source)
 
 ## Quick Start with Docker Compose
@@ -211,5 +211,5 @@ TCP 3306         - MySQL (internal only)
 - Check credentials: `mysql -u root -proot sip3`
 
 ### Build fails
-- Rust: ensure stable toolchain `rustup update stable`
+- Rust: ensure stable toolchain is at least 1.95 (`rustup update stable`)
 - Frontend: clear cache `rm -rf frontend/node_modules && npm ci`

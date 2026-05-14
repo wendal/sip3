@@ -76,14 +76,13 @@ pub async fn create(
     .await
     .map_err(|e| {
         // Use SQLx's structured error API instead of string-matching.
-        if let sqlx::Error::Database(db_err) = &e {
-            if db_err.is_unique_violation() {
+        if let sqlx::Error::Database(db_err) = &e
+            && db_err.is_unique_violation() {
                 return (
                     StatusCode::CONFLICT,
                     "Account already exists for this username and domain".to_string(),
                 );
             }
-        }
         (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
 

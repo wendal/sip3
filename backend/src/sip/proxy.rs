@@ -360,12 +360,11 @@ impl Proxy {
                 .ok()
                 .flatten();
 
-                if let Some((ip, port)) = row {
-                    if let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
+                if let Some((ip, port)) = row
+                    && let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
                         let _ = self.send_sip(msg.raw.clone(), target).await;
                         info!("Forwarded ACK (fallback) to {} at {}", callee, target);
                     }
-                }
             }
         }
 
@@ -421,12 +420,11 @@ impl Proxy {
                 .ok()
                 .flatten();
 
-                if let Some((ip, port)) = row {
-                    if let Ok(fallback) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
+                if let Some((ip, port)) = row
+                    && let Ok(fallback) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
                         let _ = self.send_sip(msg.raw.clone(), fallback).await;
                         info!("Forwarded BYE (fallback) to {} at {}", callee, fallback);
                     }
-                }
             }
         }
 
@@ -639,7 +637,7 @@ impl Proxy {
 
 fn rand_token() -> String {
     use rand::Rng;
-    let n: u64 = rand::thread_rng().gen();
+    let n: u64 = rand::rng().random();
     format!("{:x}", n)
 }
 

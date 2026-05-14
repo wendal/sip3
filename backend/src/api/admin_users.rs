@@ -46,14 +46,13 @@ pub async fn create(
         .execute(&state.pool)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(db_err) = &e {
-                if db_err.is_unique_violation() {
+            if let sqlx::Error::Database(db_err) = &e
+                && db_err.is_unique_violation() {
                     return (
                         StatusCode::CONFLICT,
                         "Admin user with this username already exists".to_string(),
                     );
                 }
-            }
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 

@@ -1,7 +1,8 @@
 [package]
 name = "sip3-backend"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.95"
 
 [lib]
 name = "sip3_backend"
@@ -29,7 +30,7 @@ thiserror = "1"
 tokio-util = "0.7"
 bytes = "1"
 md5 = "0.7"
-rand = "0.8"
+rand = "0.9"
 jsonwebtoken = "9"
 ipnet = "2"
 native-tls = "0.2"

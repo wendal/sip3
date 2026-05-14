@@ -58,14 +58,13 @@ pub async fn update(
     Path(id): Path<u32>,
     Json(body): Json<UpdateAclEntry>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    if let Some(action) = &body.action {
-        if action != "allow" && action != "deny" {
+    if let Some(action) = &body.action
+        && action != "allow" && action != "deny" {
             return Err((
                 StatusCode::BAD_REQUEST,
                 "action must be 'allow' or 'deny'".to_string(),
             ));
         }
-    }
     let canonical_cidr = if let Some(cidr) = &body.cidr {
         Some(parse_cidr(cidr).map_err(|e| (StatusCode::BAD_REQUEST, e))?)
     } else {

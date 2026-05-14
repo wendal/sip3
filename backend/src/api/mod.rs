@@ -71,12 +71,11 @@ async fn require_auth(
     next: Next,
 ) -> Result<Response, StatusCode> {
     // Try Bearer JWT first.
-    if let Some(token) = extract_bearer_token(&req) {
-        if let Ok(claims) = jwt::verify_token(&token, &state.jwt_secret) {
+    if let Some(token) = extract_bearer_token(&req)
+        && let Ok(claims) = jwt::verify_token(&token, &state.jwt_secret) {
             req.extensions_mut().insert(claims);
             return Ok(next.run(req).await);
         }
-    }
 
     // Try X-Api-Key.
     if let Some(api_key) = &state.config.auth.api_key {
@@ -117,7 +116,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     // Resolve the JWT secret: use configured value or generate a random one at startup.
     let jwt_secret = if cfg.auth.jwt_secret.is_empty() {
         use rand::Rng;
-        let bytes: Vec<u8> = rand::thread_rng().gen::<[u8; 32]>().to_vec();
+        let bytes: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
     } else {
         cfg.auth.jwt_secret.clone()

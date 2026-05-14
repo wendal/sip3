@@ -311,8 +311,8 @@ fn build_notify(
 }
 
 fn rand_hex(bytes: usize) -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..bytes)
-        .map(|_| format!("{:02x}", rng.gen::<u8>()))
+        .map(|_| format!("{:02x}", rng.random::<u8>()))
         .collect()
 }

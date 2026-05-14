@@ -114,13 +114,11 @@ async fn handle_connection(
 fn extract_content_length(headers: &str) -> usize {
     for line in headers.lines() {
         let lower = line.to_lowercase();
-        if lower.starts_with("content-length:") || lower.starts_with("l:") {
-            if let Some(colon) = line.find(':') {
-                if let Ok(n) = line[colon + 1..].trim().parse::<usize>() {
+        if (lower.starts_with("content-length:") || lower.starts_with("l:"))
+            && let Some(colon) = line.find(':')
+                && let Ok(n) = line[colon + 1..].trim().parse::<usize>() {
                     return n;
                 }
-            }
-        }
     }
     0
 }

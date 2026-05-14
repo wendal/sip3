@@ -87,14 +87,12 @@ impl SipMessage {
                     continue;
                 }
                 if line.starts_with(' ') || line.starts_with('\t') {
-                    if let Some(key) = &last_key {
-                        if let Some(vals) = headers.get_mut(key) {
-                            if let Some(last) = vals.last_mut() {
+                    if let Some(key) = &last_key
+                        && let Some(vals) = headers.get_mut(key)
+                            && let Some(last) = vals.last_mut() {
                                 last.push(' ');
                                 last.push_str(line.trim());
                             }
-                        }
-                    }
                 } else if let Some(colon_pos) = line.find(':') {
                     let name = normalize_header_name(&line[..colon_pos]);
                     let value = line[colon_pos + 1..].trim().to_string();
@@ -237,11 +235,10 @@ pub fn base_response(req: &SipMessage, status_code: u16, reason: &str) -> SipRes
 
 /// Extract URI from a SIP address like "Name" <sip:user@host> or sip:user@host
 pub fn extract_uri(addr: &str) -> Option<String> {
-    if let Some(start) = addr.find('<') {
-        if let Some(end_rel) = addr[start..].find('>') {
+    if let Some(start) = addr.find('<')
+        && let Some(end_rel) = addr[start..].find('>') {
             return Some(addr[start + 1..start + end_rel].trim().to_string());
         }
-    }
     let uri = addr.split(';').next().unwrap_or(addr).trim();
     if uri.starts_with("sip:") || uri.starts_with("sips:") || uri.starts_with("tel:") {
         Some(uri.to_string())

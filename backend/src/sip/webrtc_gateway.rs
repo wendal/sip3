@@ -161,13 +161,11 @@ impl WebRtcGateway {
                 let mut buf = vec![0u8; 4096];
                 while let Ok((packet, _)) = track.read(&mut buf).await {
                     // Marshal the decoded RTP packet back to raw bytes.
-                    if let Ok(raw) = packet.marshal() {
-                        if !raw.is_empty() {
-                            if let Some(addr) = *peer.lock().await {
+                    if let Ok(raw) = packet.marshal()
+                        && !raw.is_empty()
+                            && let Some(addr) = *peer.lock().await {
                                 let _ = socket.send_to(&raw, addr).await;
                             }
-                        }
-                    }
                 }
             })
         }));
