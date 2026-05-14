@@ -144,10 +144,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .route("/api/calls", get(status::list_calls))
         .route("/api/stats", get(stats::get_stats))
         .route("/api/acl", get(acl::list).post(acl::create))
-        .route(
-            "/api/acl/:id",
-            put(acl::update).delete(acl::delete_rule),
-        )
+        .route("/api/acl/:id", put(acl::update).delete(acl::delete_rule))
         .route(
             "/api/admin/users",
             get(admin_users::list).post(admin_users::create),
@@ -156,10 +153,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             "/api/admin/users/:id",
             put(admin_users::update).delete(admin_users::delete_user),
         )
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_auth,
-        ));
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let app = Router::new()
         .route("/api/health", get(health))

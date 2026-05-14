@@ -17,9 +17,7 @@ struct PeriodStats {
     pub duration_secs: i64,
 }
 
-pub async fn get_stats(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+pub async fn get_stats(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
     let err = |e: sqlx::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
 
     // Today's aggregate (use range instead of DATE() so an index on started_at can be used)

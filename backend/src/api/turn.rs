@@ -64,18 +64,11 @@ pub async fn credentials(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let stored_ha1 = stored.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "Invalid credentials".to_string(),
-        )
-    })?;
+    let stored_ha1 =
+        stored.ok_or_else(|| (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()))?;
 
     if ha1_computed != stored_ha1 {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid credentials".to_string(),
-        ));
+        return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()));
     }
 
     // Generate coturn time-limited credentials.

@@ -31,8 +31,7 @@ pub async fn create(
             "action must be 'allow' or 'deny'".to_string(),
         ));
     }
-    let canonical_cidr = parse_cidr(&body.cidr)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let canonical_cidr = parse_cidr(&body.cidr).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     let priority = body.priority.unwrap_or(100);
     let enabled = body.enabled.unwrap_or(1);

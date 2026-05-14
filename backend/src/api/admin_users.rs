@@ -40,26 +40,26 @@ pub async fn create(
     let password_hash = hash(&body.password, DEFAULT_COST)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let result = sqlx::query(
-        "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
-    )
-    .bind(&body.username)
-    .bind(&password_hash)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(db_err) = &e {
-            if db_err.is_unique_violation() {
-                return (
-                    StatusCode::CONFLICT,
-                    "Admin user with this username already exists".to_string(),
-                );
+    let result = sqlx::query("INSERT INTO admin_users (username, password_hash) VALUES (?, ?)")
+        .bind(&body.username)
+        .bind(&password_hash)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(db_err) = &e {
+                if db_err.is_unique_violation() {
+                    return (
+                        StatusCode::CONFLICT,
+                        "Admin user with this username already exists".to_string(),
+                    );
+                }
             }
-        }
-        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-    })?;
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
 
-    Ok(Json(json!({ "id": result.last_insert_id(), "message": "Admin user created" })))
+    Ok(Json(
+        json!({ "id": result.last_insert_id(), "message": "Admin user created" }),
+    ))
 }
 
 pub async fn update(
@@ -69,12 +69,7 @@ pub async fn update(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let password = match &body.password {
         Some(p) if !p.is_empty() => p,
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "password is required".to_string(),
-            ))
-        }
+        _ => return Err((StatusCode::BAD_REQUEST, "password is required".to_string())),
     };
 
     if password.len() < 6 {

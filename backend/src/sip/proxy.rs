@@ -7,8 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
 use super::handler::{
-    base_response, extract_uri, uri_username, ActiveDialogs, DialogInfo, PendingDialogs,
-    SipMessage,
+    base_response, extract_uri, uri_username, ActiveDialogs, DialogInfo, PendingDialogs, SipMessage,
 };
 use super::media::{is_webrtc_sdp, make_plain_rtp_sdp, rewrite_sdp, MediaRelay};
 use super::webrtc_gateway::WebRtcGateway;
@@ -145,7 +144,11 @@ impl Proxy {
         let rewritten_body = if !msg.body.is_empty() && is_webrtc_sdp(&msg.body) {
             // Browser-originated WebRTC INVITE: create a WebRTC session and
             // replace the WebRTC SDP with a plain RTP offer for the SIP phone.
-            match self.webrtc_gateway.create_session(call_id.clone(), &msg.body).await {
+            match self
+                .webrtc_gateway
+                .create_session(call_id.clone(), &msg.body)
+                .await
+            {
                 Ok((_answer_sdp, sip_port)) => {
                     info!(
                         "WebRTC session for {}: forwarding with plain RTP port {}",

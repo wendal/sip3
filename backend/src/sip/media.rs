@@ -324,7 +324,8 @@ pub fn rewrite_content_length(raw: &str, new_body: &str) -> String {
 /// Return true if the SDP body contains at least one `a=crypto:` attribute,
 /// indicating that SRTP (SDES key exchange) is being offered.
 pub fn sdp_has_crypto(sdp: &str) -> bool {
-    sdp.lines().any(|l| l.to_lowercase().starts_with("a=crypto:"))
+    sdp.lines()
+        .any(|l| l.to_lowercase().starts_with("a=crypto:"))
 }
 
 /// Return true if the SIP response's `CSeq` header ends with `INVITE`

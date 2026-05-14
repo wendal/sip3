@@ -346,7 +346,9 @@ mod tests {
         assert!(rewritten.contains("m=audio 10000 RTP/SAVP 0"));
 
         // Crypto attribute must be preserved verbatim.
-        assert!(rewritten.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKioqKioqKioqKioqKio="));
+        assert!(rewritten.contains(
+            "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKioqKioqKioqKioqKio="
+        ));
     }
 
     #[test]
@@ -363,7 +365,8 @@ mod tests {
     #[test]
     fn test_srtp_savp_port_extraction() {
         // sdp_audio_port must work with RTP/SAVP (SRTP) m= lines.
-        let sdp = "m=audio 12345 RTP/SAVP 0 8\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:key==\r\n";
+        let sdp =
+            "m=audio 12345 RTP/SAVP 0 8\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:key==\r\n";
         assert_eq!(sdp_audio_port(sdp), Some(12345));
     }
 }

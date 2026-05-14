@@ -139,33 +139,35 @@ impl Presence {
     }
 
     /// Send NOTIFY to all active subscribers watching `username@domain`.
-    pub async fn notify_status_change(
-        &self,
-        username: &str,
-        domain: &str,
-        status: PresenceStatus,
-    ) {
-        let rows: Vec<(String, String, String, u16, String, u32, chrono::NaiveDateTime)> =
-            match sqlx::query_as(
-                "SELECT subscriber, subscriber_tag, subscriber_ip, subscriber_port, \
+    pub async fn notify_status_change(&self, username: &str, domain: &str, status: PresenceStatus) {
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            u16,
+            String,
+            u32,
+            chrono::NaiveDateTime,
+        )> = match sqlx::query_as(
+            "SELECT subscriber, subscriber_tag, subscriber_ip, subscriber_port, \
                         call_id, cseq, expires_at \
                  FROM sip_presence_subscriptions \
                  WHERE target = ? AND domain = ? AND expires_at > NOW()",
-            )
-            .bind(username)
-            .bind(domain)
-            .fetch_all(&self.pool)
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch presence subscriptions for {}@{}: {}",
-                        username, domain, e
-                    );
-                    return;
-                }
-            };
+        )
+        .bind(username)
+        .bind(domain)
+        .fetch_all(&self.pool)
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch presence subscriptions for {}@{}: {}",
+                    username, domain, e
+                );
+                return;
+            }
+        };
 
         for (subscriber, sub_tag, ip, port, call_id, cseq, expires_at) in rows {
             let new_cseq = cseq.saturating_add(1);
@@ -185,9 +187,7 @@ impl Presence {
                 Err(_) => continue,
             };
 
-            let remaining = (expires_at - Utc::now().naive_utc())
-                .num_seconds()
-                .max(0) as u32;
+            let remaining = (expires_at - Utc::now().naive_utc()).num_seconds().max(0) as u32;
             let sub_state = format!("active;expires={}", remaining);
             let notify = build_notify(
                 &subscriber,

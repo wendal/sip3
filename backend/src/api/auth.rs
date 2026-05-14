@@ -43,8 +43,12 @@ pub async fn login(
         return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()));
     }
 
-    let token = jwt::issue_token(&user.username, &state.jwt_secret, state.config.auth.jwt_expiry_secs)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let token = jwt::issue_token(
+        &user.username,
+        &state.jwt_secret,
+        state.config.auth.jwt_expiry_secs,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(json!({
         "token": token,
@@ -89,7 +93,10 @@ pub async fn change_password(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if !valid {
-        return Err((StatusCode::UNAUTHORIZED, "Current password is incorrect".to_string()));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Current password is incorrect".to_string(),
+        ));
     }
 
     let new_hash = bcrypt::hash(&body.new_password, bcrypt::DEFAULT_COST)
@@ -107,8 +114,6 @@ pub async fn change_password(
 
 /// `GET /api/auth/me` — JWT-protected.
 /// Returns basic info about the currently logged-in admin.
-pub async fn me(
-    axum::Extension(claims): axum::Extension<jwt::Claims>,
-) -> Json<Value> {
+pub async fn me(axum::Extension(claims): axum::Extension<jwt::Claims>) -> Json<Value> {
     Json(json!({ "username": claims.sub }))
 }

@@ -64,9 +64,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     }
 
     // Spawn secure WebSocket SIP server if wss_port is non-zero and TLS is configured.
-    if cfg.server.wss_port != 0
-        && !cfg.server.tls_cert.is_empty()
-        && !cfg.server.tls_key.is_empty()
+    if cfg.server.wss_port != 0 && !cfg.server.tls_cert.is_empty() && !cfg.server.tls_key.is_empty()
     {
         let wss_cfg = cfg.clone();
         let wss_pool = pool.clone();
@@ -82,7 +80,10 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let default_policy = DefaultPolicy::from_config(&cfg.acl.default_policy);
     let acl_checker = match AclChecker::load_from_db(&pool, default_policy.clone()).await {
         Ok(a) => {
-            info!("ACL loaded ({} rules, default: {})", 0, &cfg.acl.default_policy);
+            info!(
+                "ACL loaded ({} rules, default: {})",
+                0, &cfg.acl.default_policy
+            );
             Arc::new(RwLock::new(a))
         }
         Err(e) => {
@@ -95,8 +96,9 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     // or network failures where BYE is never received, preventing port leaks).
     let media_relay_cleanup = handler.media_relay().clone();
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(MEDIA_CLEANUP_INTERVAL_SECS));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+            MEDIA_CLEANUP_INTERVAL_SECS,
+        ));
         loop {
             interval.tick().await;
             media_relay_cleanup
@@ -108,8 +110,9 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     // Background task: clean up stale WebRTC sessions.
     let webrtc_gw_cleanup = handler.webrtc_gateway().clone();
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(MEDIA_CLEANUP_INTERVAL_SECS));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+            MEDIA_CLEANUP_INTERVAL_SECS,
+        ));
         loop {
             interval.tick().await;
             webrtc_gw_cleanup
@@ -130,10 +133,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
                 .await
             {
                 Ok(r) if r.rows_affected() > 0 => {
-                    info!(
-                        "Cleaned up {} expired registration(s)",
-                        r.rows_affected()
-                    );
+                    info!("Cleaned up {} expired registration(s)", r.rows_affected());
                 }
                 Err(e) => warn!("Registration cleanup error: {}", e),
                 _ => {}
@@ -148,11 +148,9 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             tokio::time::interval(tokio::time::Duration::from_secs(PRES_CLEANUP_INTERVAL_SECS));
         loop {
             interval.tick().await;
-            match sqlx::query(
-                "DELETE FROM sip_presence_subscriptions WHERE expires_at < NOW()",
-            )
-            .execute(&pool_pres)
-            .await
+            match sqlx::query("DELETE FROM sip_presence_subscriptions WHERE expires_at < NOW()")
+                .execute(&pool_pres)
+                .await
             {
                 Ok(r) if r.rows_affected() > 0 => {
                     info!(

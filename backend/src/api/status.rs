@@ -110,7 +110,9 @@ pub async fn list_calls(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(json!({ "data": calls, "limit": limit, "offset": offset })))
+    Ok(Json(
+        json!({ "data": calls, "limit": limit, "offset": offset }),
+    ))
 }
 
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]

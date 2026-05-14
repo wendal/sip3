@@ -61,11 +61,7 @@ pub struct WebRtcGateway {
 }
 
 impl WebRtcGateway {
-    pub fn new(
-        public_ip: String,
-        sip_port_min: u16,
-        sip_port_max: u16,
-    ) -> Self {
+    pub fn new(public_ip: String, sip_port_min: u16, sip_port_max: u16) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             public_ip,
@@ -118,10 +114,7 @@ impl WebRtcGateway {
 
         // --- SettingEngine: NAT 1:1 mapping ---
         let mut se = SettingEngine::default();
-        se.set_nat_1to1_ips(
-            vec![self.public_ip.clone()],
-            RTCIceCandidateType::Host,
-        );
+        se.set_nat_1to1_ips(vec![self.public_ip.clone()], RTCIceCandidateType::Host);
 
         // --- Build API + PeerConnection ---
         let mut registry = Registry::new();
@@ -151,9 +144,7 @@ impl WebRtcGateway {
             .await?;
 
         // Drain RTCP to prevent sender backpressure.
-        tokio::spawn(async move {
-            while rtp_sender.read_rtcp().await.is_ok() {}
-        });
+        tokio::spawn(async move { while rtp_sender.read_rtcp().await.is_ok() {} });
 
         // --- SIP-side UDP socket (SIP phone sends RTP here) ---
         let sip_socket = Arc::new(self.bind_sip_port().await?);

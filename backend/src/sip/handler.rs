@@ -423,11 +423,7 @@ impl SipHandler {
 
     /// Process a raw SIP message (from any transport) and return a response string
     /// if one should be sent, or None for ACKs, relayed responses, and parse errors.
-    pub async fn process_sip_msg(
-        &self,
-        raw: &str,
-        src: SocketAddr,
-    ) -> Result<Option<String>> {
+    pub async fn process_sip_msg(&self, raw: &str, src: SocketAddr) -> Result<Option<String>> {
         let msg = match SipMessage::parse(raw) {
             Ok(m) => m,
             Err(e) => {
@@ -514,7 +510,9 @@ impl SipHandler {
                 if let Some(answer_sdp) = self.webrtc_gateway.get_answer_sdp(&call_id).await {
                     // WebRTC call: set SIP phone's RTP address, return our WebRTC answer.
                     if let Some(sip_rtp_addr) = sdp_rtp_addr(&msg.body) {
-                        self.webrtc_gateway.set_sip_peer(&call_id, sip_rtp_addr).await;
+                        self.webrtc_gateway
+                            .set_sip_peer(&call_id, sip_rtp_addr)
+                            .await;
                     }
                     rewrite_content_length(&relayed, &answer_sdp)
                 } else if let Some(new_sdp) = self.rewrite_200ok_sdp(&call_id, &msg.body).await {
