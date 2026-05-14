@@ -92,6 +92,51 @@
         </el-button>
       </div>
 
+      <!-- Instant Message -->
+      <div class="chat-panel">
+        <div class="chat-header">
+          <el-input
+            v-model="chatTarget"
+            placeholder="聊天分机号（如 1002）"
+            size="small"
+            clearable
+          />
+          <el-button size="small" :loading="chatLoading" @click="loadChatHistory">历史</el-button>
+        </div>
+        <div class="chat-list">
+          <div v-if="!chatMessages.length" class="chat-empty">暂无消息</div>
+          <div
+            v-for="msg in chatMessages"
+            :key="msg.id"
+            :class="['chat-item', msg.direction === 'out' ? 'chat-item-out' : 'chat-item-in']"
+          >
+            <div class="chat-bubble">{{ msg.content }}</div>
+            <div class="chat-meta">
+              <span>{{ msg.direction === 'out' ? '我' : msg.peer }}</span>
+              <span>{{ formatChatTime(msg.at) }}</span>
+              <span v-if="msg.direction === 'out'">
+                {{ msg.status === 'failed' ? '失败' : (msg.status === 'sending' ? '发送中' : '已送达') }}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="chat-send-row">
+          <el-input
+            v-model="chatInput"
+            placeholder="输入消息，回车发送"
+            @keyup.enter="sendMessage"
+          />
+          <el-button
+            type="primary"
+            :disabled="!chatTarget.trim() || !chatInput.trim()"
+            @click="sendMessage"
+          >
+            发送
+          </el-button>
+        </div>
+        <div v-if="chatError" class="chat-error">{{ chatError }}</div>
+      </div>
+
       <!-- Remote audio element -->
       <audio ref="remoteAudio" autoplay></audio>
     </div>
@@ -107,6 +152,7 @@ import {
   Registerer,
   RegistererState,
   Inviter,
+  Messager,
   SessionState,
   Web,
 } from 'sip.js'
@@ -135,6 +181,11 @@ const callError = ref('')
 const muted = ref(false)
 const callDuration = ref(0)
 const remoteAudio = ref(null)
+const chatTarget = ref('')
+const chatInput = ref('')
+const chatMessages = ref([])
+const chatLoading = ref(false)
+const chatError = ref('')
 
 let callTimer = null
 
@@ -149,6 +200,101 @@ function formatDuration(secs) {
   const m = Math.floor(secs / 60).toString().padStart(2, '0')
   const s = (secs % 60).toString().padStart(2, '0')
   return `${m}:${s}`
+}
+
+function formatChatTime(value) {
+  if (!value) return '-'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  return d.toLocaleTimeString()
+}
+
+function appendChatMessage({ direction, peer, content, at, status }) {
+  chatMessages.value.push({
+    id: `${Date.now()}-${Math.random()}`,
+    direction,
+    peer: peer || '未知',
+    content: content || '',
+    at: at || new Date().toISOString(),
+    status: status || 'delivered',
+  })
+}
+
+async function loadChatHistory() {
+  const peer = chatTarget.value.trim()
+  if (!peer) {
+    chatError.value = '请先输入聊天分机号'
+    return
+  }
+  chatLoading.value = true
+  chatError.value = ''
+  try {
+    const resp = await fetch('/api/messages/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: form.value.username,
+        password: form.value.password,
+        domain: form.value.domain,
+        peer,
+        limit: 100,
+      }),
+    })
+    const payload = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      throw new Error(payload?.message || payload?.error || '加载消息历史失败')
+    }
+    const selfAor = `${form.value.username}@${form.value.domain}`.toLowerCase()
+    const rows = (payload.data || []).slice().reverse()
+    chatMessages.value = rows.map((row, idx) => ({
+      id: `${row.id || 'history'}-${idx}`,
+      direction: (row.sender || '').toLowerCase() === selfAor ? 'out' : 'in',
+      peer,
+      content: row.body || '',
+      at: row.created_at,
+      status: row.status || 'delivered',
+    }))
+  } catch (e) {
+    chatError.value = e?.message || '加载消息历史失败'
+  } finally {
+    chatLoading.value = false
+  }
+}
+
+async function sendMessage() {
+  if (!ua.value) return
+  const peer = chatTarget.value.trim()
+  const content = chatInput.value.trim()
+  if (!peer || !content) {
+    chatError.value = '请输入聊天分机号和消息内容'
+    return
+  }
+  const target = UserAgent.makeURI(`sip:${peer}@${form.value.domain}`)
+  if (!target) {
+    chatError.value = '聊天分机号格式无效'
+    return
+  }
+
+  chatError.value = ''
+  const optimistic = {
+    id: `${Date.now()}-${Math.random()}`,
+    direction: 'out',
+    peer,
+    content,
+    at: new Date().toISOString(),
+    status: 'sending',
+  }
+  chatMessages.value.push(optimistic)
+  chatInput.value = ''
+
+  try {
+    const messager = new Messager(ua.value, target, content, 'text/plain')
+    await messager.message()
+    optimistic.status = 'delivered'
+  } catch (e) {
+    optimistic.status = 'failed'
+    chatError.value = `发送失败：${e?.message || '未知错误'}`
+  }
 }
 
 function pressKey(digit) {
@@ -263,6 +409,19 @@ async function connect() {
           callState.value = 'incoming'
           attachSession(invitation, true)
         },
+        onMessage(message) {
+          const peer = message.request.from?.uri?.user || '未知'
+          if (!chatTarget.value) {
+            chatTarget.value = peer
+          }
+          appendChatMessage({
+            direction: 'in',
+            peer,
+            content: message.request.body,
+            status: 'delivered',
+          })
+          message.accept().catch(() => {})
+        },
       },
     })
 
@@ -300,6 +459,10 @@ async function disconnect() {
   callState.value = 'idle'
   callLabel.value = ''
   stopCallTimer()
+  chatTarget.value = ''
+  chatInput.value = ''
+  chatMessages.value = []
+  chatError.value = ''
 }
 
 // ── Outbound call ─────────────────────────────────────────────────────────────
@@ -545,5 +708,83 @@ onUnmounted(() => disconnect())
   display: flex;
   justify-content: center;
   gap: 24px;
+}
+
+.chat-panel {
+  margin-top: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fafafa;
+}
+
+.chat-header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chat-list {
+  height: 140px;
+  overflow: auto;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+}
+
+.chat-empty {
+  color: #909399;
+  text-align: center;
+  padding-top: 48px;
+  font-size: 12px;
+}
+
+.chat-item {
+  margin-bottom: 8px;
+}
+
+.chat-item-out {
+  text-align: right;
+}
+
+.chat-bubble {
+  display: inline-block;
+  max-width: 80%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #ecf5ff;
+  color: #303133;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.chat-item-out .chat-bubble {
+  background: #f0f9eb;
+}
+
+.chat-meta {
+  margin-top: 2px;
+  color: #909399;
+  font-size: 11px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-start;
+}
+
+.chat-item-out .chat-meta {
+  justify-content: flex-end;
+}
+
+.chat-send-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.chat-error {
+  margin-top: 6px;
+  color: #f56c6c;
+  font-size: 12px;
 }
 </style>

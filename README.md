@@ -25,6 +25,7 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 - ✅ SIP BYE / CANCEL / INFO bidirectional routing
 - ✅ SIP REFER + NOTIFY — blind call transfer
 - ✅ SIP SUBSCRIBE / NOTIFY — Presence & BLF (busy lamp field)
+- ✅ SIP MESSAGE — instant messaging relay + persistence
 - ✅ SIP OPTIONS — keep-alive / capability probe (inline 200 OK)
 
 #### Transport
@@ -105,6 +106,7 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | GET    | /api/health                | Health check                          |
 | POST   | /api/auth/login            | Admin login → JWT                     |
 | POST   | /api/turn/credentials      | TURN creds (SIP HA1 auth)             |
+| POST   | /api/messages/history      | Phone message history (SIP credential auth) |
 
 **Protected (JWT required)**
 
@@ -117,6 +119,7 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | GET    | /api/registrations         | List active registrations             |
 | DELETE | /api/registrations/:id     | Force de-register                     |
 | GET    | /api/calls                 | List call records (CDR)               |
+| GET    | /api/messages              | List persisted SIP MESSAGE records    |
 | GET    | /api/stats                 | Dashboard statistics                  |
 | GET    | /api/security/summary      | Security summary (24h failures/blocks) |
 | GET    | /api/security/events       | Security event timeline               |
@@ -195,6 +198,7 @@ SIP3 是一个功能完整的 SIP 代理/注册服务器，使用 Rust 构建后
 - ✅ SIP BYE / CANCEL / INFO 双向路由
 - ✅ SIP REFER + NOTIFY — 盲转呼叫
 - ✅ SIP SUBSCRIBE / NOTIFY — 在线状态与 BLF（忙灯显示）
+- ✅ SIP MESSAGE — 即时消息转发与持久化
 - ✅ SIP OPTIONS — 保活/能力探测
 
 #### 传输层

@@ -7,11 +7,12 @@ mod tests {
     use sip3_backend::security_guard::{AuthSurface, GuardLimits, SecurityGuard};
     use sip3_backend::sip::handler::{
         extract_uri, md5_hex, normalize_header_name, parse_auth_params, strip_proxy_via,
-        uri_username, SipMessage,
+        uri_username, SipMessage, SIP_ALLOW_METHODS,
     };
     use sip3_backend::sip::media::{rewrite_sdp, sdp_audio_port, sdp_has_crypto};
     use sip3_backend::sip::proxy::{
         should_preserve_webrtc_sdp_for_target, CALLER_ACCOUNT_EXISTS_SQL,
+        MESSAGE_SENDER_ACCOUNT_EXISTS_SQL,
     };
     use sip3_backend::sip::registrar::{generate_nonce, validate_nonce, ACCOUNT_LOOKUP_SQL};
     use sip3_backend::sip::transport::TransportRegistry;
@@ -77,6 +78,31 @@ mod tests {
         assert!(msg.method.is_none());
         assert_eq!(msg.status_code, Some(180));
         assert_eq!(msg.via_headers().len(), 2);
+    }
+
+    #[test]
+    fn test_parse_message_request() {
+        let raw = "MESSAGE sip:1002@sip.example.com SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bKmsg\r\n\
+                   From: <sip:1001@sip.example.com>;tag=msg-1\r\n\
+                   To: <sip:1002@sip.example.com>\r\n\
+                   Call-ID: msg-call-id@192.168.1.100\r\n\
+                   CSeq: 1 MESSAGE\r\n\
+                   Content-Type: text/plain\r\n\
+                   Content-Length: 5\r\n\
+                   \r\n\
+                   hello";
+
+        let msg = SipMessage::parse(raw).expect("parse failed");
+        assert_eq!(msg.method.as_deref(), Some("MESSAGE"));
+        assert_eq!(msg.request_uri.as_deref(), Some("sip:1002@sip.example.com"));
+        assert_eq!(msg.header("content-type"), Some("text/plain"));
+        assert_eq!(msg.body, "hello");
+    }
+
+    #[test]
+    fn test_allow_methods_include_message() {
+        assert!(SIP_ALLOW_METHODS.contains("MESSAGE"));
     }
 
     // ── extract_uri ─────────────────────────────────────────────────────────
@@ -237,6 +263,12 @@ mod tests {
                 .to_lowercase()
                 .contains("select id"),
             "INVITE caller lookup must not decode BIGINT UNSIGNED id into a signed Rust integer"
+        );
+        assert!(
+            !MESSAGE_SENDER_ACCOUNT_EXISTS_SQL
+                .to_lowercase()
+                .contains("select id"),
+            "MESSAGE sender lookup must not decode BIGINT UNSIGNED id into a signed Rust integer"
         );
     }
 

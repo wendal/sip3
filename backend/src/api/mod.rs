@@ -21,6 +21,7 @@ pub mod acl;
 pub mod admin_users;
 pub mod auth;
 pub mod jwt;
+pub mod messages;
 pub mod security;
 pub mod stats;
 pub mod status;
@@ -153,6 +154,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             axum::routing::delete(status::delete_registration),
         )
         .route("/api/calls", get(status::list_calls))
+        .route("/api/messages", get(messages::list_messages))
         .route("/api/stats", get(stats::get_stats))
         .route("/api/security/events", get(security::list_events))
         .route("/api/security/blocks", get(security::list_blocks))
@@ -175,6 +177,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .route("/api/health", get(health))
         .route("/api/auth/login", post(auth::login))
         .route("/api/turn/credentials", post(turn::credentials))
+        .route("/api/messages/history", post(messages::history))
         .merge(jwt_routes)
         .merge(protected)
         .layer(cors)

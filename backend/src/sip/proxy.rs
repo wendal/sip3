@@ -19,6 +19,10 @@ pub const CALLER_ACCOUNT_EXISTS_SQL: &str = "\
     SELECT 1 FROM sip_accounts
     WHERE username = ? AND domain = ? AND enabled = 1";
 
+pub const MESSAGE_SENDER_ACCOUNT_EXISTS_SQL: &str = "\
+    SELECT 1 FROM sip_accounts
+    WHERE username = ? AND domain = ? AND enabled = 1";
+
 pub fn is_websocket_contact_uri(contact_uri: &str) -> bool {
     contact_uri.to_ascii_lowercase().contains("transport=ws")
 }
@@ -218,6 +222,59 @@ impl Proxy {
             self.socket.send_to(message.as_bytes(), target).await?;
         }
         Ok(())
+    }
+
+    async fn lookup_registered_target(&self, username: &str, domain: &str) -> Option<SocketAddr> {
+        let row: Option<(String, u16)> = sqlx::query_as(
+            "SELECT source_ip, source_port FROM sip_registrations
+             WHERE username = ? AND domain = ? AND expires_at > NOW()",
+        )
+        .bind(username)
+        .bind(domain)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+
+        row.and_then(|(ip, port)| format!("{}:{}", ip, port).parse::<SocketAddr>().ok())
+    }
+
+    async fn persist_message(
+        &self,
+        msg: &SipMessage,
+        sender: &str,
+        receiver: &str,
+        status: &str,
+        source_ip: &str,
+    ) {
+        let message_id = msg.header("message-id");
+        let call_id = msg.call_id();
+        let content_type = msg.header("content-type").unwrap_or("text/plain");
+        let delivered_at = if status == "delivered" {
+            Some(Utc::now().naive_utc())
+        } else {
+            None
+        };
+
+        if let Err(e) = sqlx::query(
+            "INSERT INTO sip_messages
+                (message_id, call_id, sender, receiver, content_type, body, status, source_ip, created_at, delivered_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)",
+        )
+        .bind(message_id)
+        .bind(call_id)
+        .bind(sender)
+        .bind(receiver)
+        .bind(content_type)
+        .bind(&msg.body)
+        .bind(status)
+        .bind(source_ip)
+        .bind(delivered_at)
+        .execute(&self.pool)
+        .await
+        {
+            warn!("Failed to persist MESSAGE {} -> {}: {}", sender, receiver, e);
+        }
     }
 
     fn build_forwarded_invite(
@@ -492,6 +549,91 @@ impl Proxy {
         }
 
         Ok(base_response(msg, 200, "OK").build())
+    }
+
+    pub async fn handle_message(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
+        let domain = self.cfg.server.sip_domain.clone();
+        let sender = msg
+            .from_header()
+            .and_then(extract_uri)
+            .and_then(|u| uri_username(&u))
+            .unwrap_or_default();
+        if sender.is_empty() {
+            warn!("MESSAGE with no sender from {}", src);
+            return Ok(base_response(msg, 400, "Bad Request").build());
+        }
+        let sender_ok: Option<(i32,)> = sqlx::query_as(MESSAGE_SENDER_ACCOUNT_EXISTS_SQL)
+            .bind(&sender)
+            .bind(&domain)
+            .fetch_optional(&self.pool)
+            .await?;
+        if sender_ok.is_none() {
+            warn!("MESSAGE from unrecognised sender: {}@{}", sender, domain);
+            return Ok(base_response(msg, 403, "Forbidden").build());
+        }
+
+        let fallback_callee = msg
+            .to_header()
+            .and_then(extract_uri)
+            .and_then(|u| uri_username(&u))
+            .unwrap_or_default();
+        let callee = msg
+            .request_uri
+            .as_deref()
+            .and_then(uri_username)
+            .filter(|u| !u.is_empty())
+            .unwrap_or(fallback_callee);
+        if callee.is_empty() {
+            warn!("MESSAGE with no callee from {}", src);
+            return Ok(base_response(msg, 400, "Bad Request").build());
+        }
+
+        let sender_aor = format!("{}@{}", sender, domain);
+        let callee_aor = format!("{}@{}", callee, domain);
+        let call_id = msg.call_id().unwrap_or("").to_string();
+
+        let dialog_target = if call_id.is_empty() {
+            None
+        } else {
+            let active = self.active_dialogs.lock().await;
+            active.get(&call_id).map(|d| {
+                if src == d.caller_addr {
+                    d.callee_addr
+                } else {
+                    d.caller_addr
+                }
+            })
+        };
+
+        let target = match dialog_target {
+            Some(addr) => Some(addr),
+            None => self.lookup_registered_target(&callee, &domain).await,
+        };
+
+        let source_ip = src.ip().to_string();
+        if let Some(target_addr) = target {
+            if let Err(e) = self.send_sip(msg.raw.clone(), target_addr).await {
+                self.persist_message(msg, &sender_aor, &callee_aor, "failed", &source_ip)
+                    .await;
+                warn!(
+                    "Failed to forward MESSAGE {} -> {}: {}",
+                    sender_aor, callee_aor, e
+                );
+                return Ok(base_response(msg, 500, "Internal Server Error").build());
+            }
+            self.persist_message(msg, &sender_aor, &callee_aor, "delivered", &source_ip)
+                .await;
+            info!(
+                "Forwarded MESSAGE {} -> {} at {}",
+                sender_aor, callee_aor, target_addr
+            );
+            Ok(base_response(msg, 200, "OK").build())
+        } else {
+            self.persist_message(msg, &sender_aor, &callee_aor, "failed", &source_ip)
+                .await;
+            warn!("MESSAGE target offline: {} -> {}", sender_aor, callee_aor);
+            Ok(base_response(msg, 404, "Not Found").build())
+        }
     }
 }
 

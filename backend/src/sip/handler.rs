@@ -34,6 +34,9 @@ pub struct DialogInfo {
 /// Shared map from SIP Call-ID to established dialog info.
 pub type ActiveDialogs = Arc<tokio::sync::Mutex<HashMap<String, DialogInfo>>>;
 
+pub const SIP_ALLOW_METHODS: &str =
+    "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY, SUBSCRIBE, MESSAGE";
+
 #[derive(Clone)]
 pub struct DialogStores {
     pub pending: PendingDialogs,
@@ -495,6 +498,7 @@ impl SipHandler {
             "INVITE" => self.proxy.handle_invite(&msg, src).await,
             "OPTIONS" => self.handle_options(&msg),
             "INFO" => self.proxy.handle_info(&msg, src).await,
+            "MESSAGE" => self.proxy.handle_message(&msg, src).await,
             "REFER" => self.proxy.handle_refer(&msg, src).await,
             "NOTIFY" => self.proxy.handle_notify(&msg, src).await,
             "SUBSCRIBE" => self.presence.handle_subscribe(&msg, src).await,
@@ -507,10 +511,7 @@ impl SipHandler {
             _ => {
                 warn!("Unsupported SIP method: {}", method);
                 Ok(base_response(&msg, 405, "Method Not Allowed")
-                    .header(
-                        "Allow",
-                        "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY, SUBSCRIBE",
-                    )
+                    .header("Allow", SIP_ALLOW_METHODS)
                     .build())
             }
         };
@@ -623,11 +624,8 @@ impl SipHandler {
 
     fn handle_options(&self, msg: &SipMessage) -> Result<String> {
         Ok(base_response(msg, 200, "OK")
-            .header(
-                "Allow",
-                "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY, SUBSCRIBE",
-            )
-            .header("Accept", "application/sdp")
+            .header("Allow", SIP_ALLOW_METHODS)
+            .header("Accept", "application/sdp, text/plain")
             .build())
     }
 }
