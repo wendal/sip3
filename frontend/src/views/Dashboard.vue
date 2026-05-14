@@ -114,7 +114,7 @@
                   transition: 'height 0.3s',
                 }"
               />
-              <div style="font-size: 9px; color: #999; margin-top: 2px;">{{ hour }}</div>
+              <div style="font-size: 9px; color: #999; margin-top: 2px;">{{ hour % 4 === 0 ? `${hour}:00` : '' }}</div>
             </div>
           </div>
         </el-card>

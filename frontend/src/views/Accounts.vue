@@ -1,67 +1,84 @@
 <template>
   <div>
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-      <h2 style="margin: 0;">SIP Accounts</h2>
+      <h2 style="margin: 0;">SIP 账号管理</h2>
       <el-button type="primary" @click="openCreate">
-        <el-icon><Plus /></el-icon> Add Account
+        <el-icon><Plus /></el-icon> 添加账号
       </el-button>
     </div>
 
     <el-card>
-      <el-table :data="store.accounts" v-loading="store.loading" stripe>
-        <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="username" label="Username" />
-        <el-table-column prop="display_name" label="Display Name" />
-        <el-table-column prop="domain" label="Domain" />
-        <el-table-column prop="enabled" label="Status" width="100">
+      <div style="margin-bottom: 12px;">
+        <el-input
+          v-model="searchText"
+          placeholder="按用户名或域搜索..."
+          style="width: 260px;"
+          clearable
+        >
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+      </div>
+
+      <el-table :data="filteredAccounts" v-loading="store.loading" stripe>
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="username" label="用户名" />
+        <el-table-column prop="display_name" label="显示名称" />
+        <el-table-column prop="domain" label="域" />
+        <el-table-column prop="enabled" label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.enabled ? 'success' : 'danger'">
-              {{ row.enabled ? 'Enabled' : 'Disabled' }}
-            </el-tag>
+            <el-switch
+              :model-value="!!row.enabled"
+              @change="toggleEnabled(row)"
+              active-text="启用"
+              inactive-text="禁用"
+              inline-prompt
+            />
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="Created" width="160">
+        <el-table-column prop="created_at" label="创建时间" width="160">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column prop="last_call_at" label="Last Call" width="160">
+        <el-table-column prop="last_call_at" label="最后通话" width="160">
           <template #default="{ row }">
             <span v-if="row.last_call_at">{{ formatDate(row.last_call_at) }}</span>
             <span v-else style="color: #bbb;">—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="call_count" label="Calls" width="70" align="center" />
-        <el-table-column label="Actions" width="160">
+        <el-table-column prop="call_count" label="通话次数" width="80" align="center" />
+        <el-table-column label="操作" width="160">
           <template #default="{ row }">
-            <el-button size="small" @click="openEdit(row)">Edit</el-button>
-            <el-button size="small" type="danger" @click="handleDelete(row)">Delete</el-button>
+            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
     <!-- Create/Edit Dialog -->
-    <el-dialog v-model="dialogVisible" :title="editingId ? 'Edit Account' : 'Add Account'" width="500px">
-      <el-form :model="form" label-width="120px">
-        <el-form-item label="Username" v-if="!editingId">
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑账号' : '添加账号'" width="500px">
+      <el-form :model="form" label-width="90px">
+        <el-form-item label="用户名" v-if="!editingId">
           <el-input v-model="form.username" placeholder="alice" />
         </el-form-item>
-        <el-form-item label="Password">
-          <el-input v-model="form.password" type="password" placeholder="Leave blank to keep current" />
+        <el-form-item label="密码">
+          <el-input v-model="form.password" type="password" show-password
+            :placeholder="editingId ? '留空则不修改' : '请输入密码'" />
         </el-form-item>
-        <el-form-item label="Display Name">
+        <el-form-item label="显示名称">
           <el-input v-model="form.display_name" placeholder="Alice" />
         </el-form-item>
-        <el-form-item label="Domain">
+        <el-form-item label="域">
           <el-input v-model="form.domain" placeholder="sip.air32.cn" />
         </el-form-item>
-        <el-form-item label="Status" v-if="editingId">
-          <el-switch v-model="form.enabled" :active-value="1" :inactive-value="0" />
+        <el-form-item label="状态" v-if="editingId">
+          <el-switch v-model="form.enabled" :active-value="1" :inactive-value="0"
+            active-text="启用" inactive-text="禁用" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">Cancel</el-button>
+        <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleSubmit" :loading="submitting">
-          {{ editingId ? 'Update' : 'Create' }}
+          {{ editingId ? '更新' : '创建' }}
         </el-button>
       </template>
     </el-dialog>
@@ -69,17 +86,36 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useSipStore } from '../store'
 
 const store = useSipStore()
+const searchText = ref('')
 const dialogVisible = ref(false)
 const editingId = ref(null)
 const submitting = ref(false)
 const form = ref({ username: '', password: '', display_name: '', domain: 'sip.air32.cn', enabled: 1 })
 
 const formatDate = (d) => d ? new Date(d).toLocaleString() : '-'
+
+const filteredAccounts = computed(() => {
+  if (!searchText.value) return store.accounts
+  const q = searchText.value.toLowerCase()
+  return store.accounts.filter(a =>
+    a.username.toLowerCase().includes(q) || a.domain.toLowerCase().includes(q)
+  )
+})
+
+const toggleEnabled = async (row) => {
+  const newVal = row.enabled ? 0 : 1
+  try {
+    await store.updateAccount(row.id, { domain: row.domain, enabled: newVal })
+    ElMessage.success(newVal ? '账号已启用' : '账号已禁用')
+  } catch (e) {
+    ElMessage.error(e.response?.data || e.message || '操作失败')
+  }
+}
 
 const openCreate = () => {
   editingId.value = null
@@ -100,28 +136,33 @@ const handleSubmit = async () => {
       const payload = { display_name: form.value.display_name, domain: form.value.domain, enabled: form.value.enabled }
       if (form.value.password) payload.password = form.value.password
       await store.updateAccount(editingId.value, payload)
-      ElMessage.success('Account updated')
+      ElMessage.success('账号已更新')
     } else {
       if (!form.value.username || !form.value.password) {
-        ElMessage.error('Username and password are required')
+        ElMessage.error('用户名和密码不能为空')
         return
       }
-      await store.createAccount({ username: form.value.username, password: form.value.password, display_name: form.value.display_name, domain: form.value.domain })
-      ElMessage.success('Account created')
+      await store.createAccount({
+        username: form.value.username,
+        password: form.value.password,
+        display_name: form.value.display_name,
+        domain: form.value.domain,
+      })
+      ElMessage.success('账号已创建')
     }
     dialogVisible.value = false
   } catch (e) {
-    ElMessage.error(e.response?.data || e.message || 'Operation failed')
+    ElMessage.error(e.response?.data || e.message || '操作失败')
   } finally {
     submitting.value = false
   }
 }
 
 const handleDelete = async (row) => {
-  await ElMessageBox.confirm(`Delete account "${row.username}"?`, 'Confirm', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除账号 "${row.username}"？`, '确认删除', { type: 'warning' })
   try {
     await store.deleteAccount(row.id)
-    ElMessage.success('Account deleted')
+    ElMessage.success('账号已删除')
   } catch (e) {
     ElMessage.error(e.message)
   }
