@@ -14,6 +14,7 @@ use tracing::info;
 use crate::config::Config;
 
 pub mod accounts;
+pub mod acl;
 pub mod admin_users;
 pub mod auth;
 pub mod jwt;
@@ -141,6 +142,11 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         )
         .route("/api/calls", get(status::list_calls))
         .route("/api/stats", get(stats::get_stats))
+        .route("/api/acl", get(acl::list).post(acl::create))
+        .route(
+            "/api/acl/:id",
+            put(acl::update).delete(acl::delete_rule),
+        )
         .route(
             "/api/admin/users",
             get(admin_users::list).post(admin_users::create),

@@ -4,6 +4,7 @@ import Accounts from '../views/Accounts.vue'
 import Status from '../views/Status.vue'
 import Login from '../views/Login.vue'
 import AdminUsers from '../views/AdminUsers.vue'
+import Acl from '../views/Acl.vue'
 
 const routes = [
   { path: '/login', component: Login, meta: { public: true } },
@@ -12,6 +13,7 @@ const routes = [
   { path: '/accounts', component: Accounts },
   { path: '/status', component: Status },
   { path: '/admin-users', component: AdminUsers },
+  { path: '/acl', component: Acl },
 ]
 
 const router = createRouter({

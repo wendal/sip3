@@ -227,6 +227,40 @@ mod tests {
         assert!(!validate_nonce(&nonce, secret, 0));
     }
 
+    // ── ACL ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_acl_allow_all_when_empty() {
+        use sip3_backend::acl::{AclChecker, DefaultPolicy};
+        use std::net::IpAddr;
+        let checker = AclChecker::new(DefaultPolicy::Allow);
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(checker.is_allowed(ip));
+    }
+
+    #[test]
+    fn test_acl_deny_all_default() {
+        use sip3_backend::acl::{AclChecker, DefaultPolicy};
+        use std::net::IpAddr;
+        let checker = AclChecker::new(DefaultPolicy::Deny);
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(!checker.is_allowed(ip));
+    }
+
+    #[test]
+    fn test_acl_parse_cidr() {
+        use sip3_backend::acl::parse_cidr;
+        // Valid IPv4 CIDR
+        assert!(parse_cidr("192.168.1.0/24").is_ok());
+        // Valid host address
+        assert!(parse_cidr("10.0.0.1/32").is_ok());
+        // Valid IPv6
+        assert!(parse_cidr("::1/128").is_ok());
+        // Invalid CIDR
+        assert!(parse_cidr("not-a-cidr").is_err());
+        assert!(parse_cidr("999.999.999.999/24").is_err());
+    }
+
     #[test]
     fn test_sip_response_format() {
         // Verify that SipMessage::parse correctly identifies a response.

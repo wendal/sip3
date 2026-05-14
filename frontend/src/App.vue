@@ -21,6 +21,10 @@
             <el-icon><User /></el-icon>
             <span>SIP 账号</span>
           </el-menu-item>
+          <el-menu-item index="/acl">
+            <el-icon><Lock /></el-icon>
+            <span>IP ACL</span>
+          </el-menu-item>
           <el-menu-item index="/status">
             <el-icon><Monitor /></el-icon>
             <span>系统状态</span>

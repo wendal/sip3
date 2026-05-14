@@ -6,6 +6,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub auth: AuthConfig,
+    pub acl: AclConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -48,6 +49,13 @@ pub struct AuthConfig {
     pub jwt_expiry_secs: u64,
 }
 
+/// Configuration for the IP ACL (CIDR allow/deny list).
+#[derive(Debug, Deserialize, Clone)]
+pub struct AclConfig {
+    /// Default action when no rule matches: "allow" or "deny" (default: "allow").
+    pub default_policy: String,
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
         let settings = config::Config::builder()
@@ -74,6 +82,7 @@ impl Config {
             .set_default("auth.nonce_secret", "")?
             .set_default("auth.jwt_secret", "")?
             .set_default("auth.jwt_expiry_secs", 86400)?
+            .set_default("acl.default_policy", "allow")?
             .build()?;
 
         let cfg: Config = settings.try_deserialize()?;

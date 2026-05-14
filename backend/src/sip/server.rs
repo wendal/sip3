@@ -2,10 +2,11 @@ use anyhow::Result;
 use sqlx::MySqlPool;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{info, warn};
 
 use super::handler::SipHandler;
+use crate::acl::{AclChecker, DefaultPolicy};
 use crate::config::Config;
 
 /// Maximum number of datagrams being processed concurrently.
@@ -21,14 +22,30 @@ const MEDIA_CLEANUP_INTERVAL_SECS: u64 = 60;
 /// How often to purge expired registration rows from the database.
 const REG_CLEANUP_INTERVAL_SECS: u64 = 3600; // 1 hour
 
+/// How often to reload ACL rules from the database.
+const ACL_REFRESH_INTERVAL_SECS: u64 = 60;
+
 pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let addr = format!("{}:{}", cfg.server.sip_host, cfg.server.sip_port);
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
     info!("SIP server listening on udp://{}", addr);
 
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
-    let handler = SipHandler::with_socket(cfg, pool.clone(), socket.clone());
+    let handler = SipHandler::with_socket(cfg.clone(), pool.clone(), socket.clone());
     let mut buf = vec![0u8; 65535];
+
+    // Load ACL rules from DB and wrap in a shared reader-writer lock.
+    let default_policy = DefaultPolicy::from_config(&cfg.acl.default_policy);
+    let acl_checker = match AclChecker::load_from_db(&pool, default_policy.clone()).await {
+        Ok(a) => {
+            info!("ACL loaded ({} rules, default: {})", 0, &cfg.acl.default_policy);
+            Arc::new(RwLock::new(a))
+        }
+        Err(e) => {
+            warn!("Failed to load ACL rules: {} — allowing all traffic", e);
+            Arc::new(RwLock::new(AclChecker::new(default_policy.clone())))
+        }
+    };
 
     // Background task: abort stale media relay sessions (handles client crashes
     // or network failures where BYE is never received, preventing port leaks).
@@ -67,8 +84,34 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         }
     });
 
+    // Background task: periodically reload ACL rules from the database.
+    let acl_refresh = Arc::clone(&acl_checker);
+    let pool_acl = pool.clone();
+    let acl_default = default_policy;
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(ACL_REFRESH_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            match AclChecker::load_from_db(&pool_acl, acl_default.clone()).await {
+                Ok(new_acl) => {
+                    *acl_refresh.write().await = new_acl;
+                    info!("ACL rules refreshed");
+                }
+                Err(e) => warn!("ACL refresh error: {}", e),
+            }
+        }
+    });
+
     loop {
         let (len, src) = socket.recv_from(&mut buf).await?;
+
+        // ACL check: drop packets from blocked IPs before any further processing.
+        if !acl_checker.read().await.is_allowed(src.ip()) {
+            warn!("ACL: blocked packet from {}", src);
+            continue;
+        }
+
         let data = buf[..len].to_vec();
 
         // Try to acquire a concurrency permit; drop the packet if we're overloaded.
