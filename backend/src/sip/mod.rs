@@ -5,3 +5,4 @@ pub mod proxy;
 pub mod registrar;
 pub mod server;
 pub mod tcp_server;
+pub mod ws_server;

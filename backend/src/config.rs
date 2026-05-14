@@ -31,6 +31,10 @@ pub struct ServerConfig {
     pub tls_cert: String,
     /// Path to PEM-encoded TLS private key (PKCS#8 PEM). Empty = TLS disabled.
     pub tls_key: String,
+    /// Plain WebSocket SIP port (ws://). Default 5080, empty/0 = disabled.
+    pub ws_port: u16,
+    /// Secure WebSocket SIP port (wss://). Requires tls_cert+tls_key. Default 5443, 0 = disabled.
+    pub wss_port: u16,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -83,6 +87,8 @@ impl Config {
             .set_default("server.tls_port", 5061)?
             .set_default("server.tls_cert", "")?
             .set_default("server.tls_key", "")?
+            .set_default("server.ws_port", 5080)?
+            .set_default("server.wss_port", 5443)?
             .set_default("database.url", "mysql://root:root@localhost:3306/sip3")?
             .set_default("database.max_connections", 10)?
             .set_default("auth.realm", "sip.air32.cn")?

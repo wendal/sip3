@@ -7,6 +7,7 @@ use tracing::{info, warn};
 
 use super::handler::SipHandler;
 use super::tcp_server;
+use super::ws_server;
 use crate::acl::{AclChecker, DefaultPolicy};
 use crate::config::Config;
 
@@ -46,6 +47,33 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = tcp_server::run(tls_cfg, tls_pool, tls_handler).await {
                 warn!("SIP/TLS server error: {}", e);
+            }
+        });
+    }
+
+    // Spawn plain WebSocket SIP server if ws_port is non-zero.
+    if cfg.server.ws_port != 0 {
+        let ws_cfg = cfg.clone();
+        let ws_pool = pool.clone();
+        let ws_handler = handler.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ws_server::run_ws(ws_cfg, ws_pool, ws_handler).await {
+                warn!("SIP/WS server error: {}", e);
+            }
+        });
+    }
+
+    // Spawn secure WebSocket SIP server if wss_port is non-zero and TLS is configured.
+    if cfg.server.wss_port != 0
+        && !cfg.server.tls_cert.is_empty()
+        && !cfg.server.tls_key.is_empty()
+    {
+        let wss_cfg = cfg.clone();
+        let wss_pool = pool.clone();
+        let wss_handler = handler.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ws_server::run_wss(wss_cfg, wss_pool, wss_handler).await {
+                warn!("SIP/WSS server error: {}", e);
             }
         });
     }
