@@ -32,6 +32,8 @@ md5 = "0.7"
 rand = "0.8"
 jsonwebtoken = "9"
 ipnet = "2"
+native-tls = "0.2"
+tokio-native-tls = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"

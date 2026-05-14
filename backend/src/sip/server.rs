@@ -6,6 +6,7 @@ use tokio::sync::{RwLock, Semaphore};
 use tracing::{info, warn};
 
 use super::handler::SipHandler;
+use super::tcp_server;
 use crate::acl::{AclChecker, DefaultPolicy};
 use crate::config::Config;
 
@@ -36,6 +37,18 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
     let handler = SipHandler::with_socket(cfg.clone(), pool.clone(), socket.clone());
     let mut buf = vec![0u8; 65535];
+
+    // Spawn the SIP/TLS (TCP) server if cert + key are configured.
+    if !cfg.server.tls_cert.is_empty() && !cfg.server.tls_key.is_empty() {
+        let tls_cfg = cfg.clone();
+        let tls_pool = pool.clone();
+        let tls_handler = handler.clone();
+        tokio::spawn(async move {
+            if let Err(e) = tcp_server::run(tls_cfg, tls_pool, tls_handler).await {
+                warn!("SIP/TLS server error: {}", e);
+            }
+        });
+    }
 
     // Load ACL rules from DB and wrap in a shared reader-writer lock.
     let default_policy = DefaultPolicy::from_config(&cfg.acl.default_policy);

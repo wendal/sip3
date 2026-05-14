@@ -25,6 +25,12 @@ pub struct ServerConfig {
     pub rtp_port_min: u16,
     /// Upper bound of the UDP port range used for RTP media relay.
     pub rtp_port_max: u16,
+    /// TCP+TLS SIP port (default: 5061). TLS is enabled only when tls_cert is set.
+    pub tls_port: u16,
+    /// Path to PEM-encoded TLS certificate chain. Empty = TLS disabled.
+    pub tls_cert: String,
+    /// Path to PEM-encoded TLS private key (PKCS#8 PEM). Empty = TLS disabled.
+    pub tls_key: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -74,6 +80,9 @@ impl Config {
             .set_default("server.public_ip", "sip.air32.cn")?
             .set_default("server.rtp_port_min", 10000)?
             .set_default("server.rtp_port_max", 20000)?
+            .set_default("server.tls_port", 5061)?
+            .set_default("server.tls_cert", "")?
+            .set_default("server.tls_key", "")?
             .set_default("database.url", "mysql://root:root@localhost:3306/sip3")?
             .set_default("database.max_connections", 10)?
             .set_default("auth.realm", "sip.air32.cn")?

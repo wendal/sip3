@@ -399,12 +399,24 @@ impl SipHandler {
     pub async fn handle_datagram(&self, data: Vec<u8>, src: SocketAddr) -> Result<()> {
         let raw = String::from_utf8_lossy(&data).to_string();
         debug!("Received {} bytes from {}", data.len(), src);
+        if let Some(resp) = self.process_sip_msg(&raw, src).await? {
+            self.socket.send_to(resp.as_bytes(), src).await?;
+        }
+        Ok(())
+    }
 
-        let msg = match SipMessage::parse(&raw) {
+    /// Process a raw SIP message (from any transport) and return a response string
+    /// if one should be sent, or None for ACKs, relayed responses, and parse errors.
+    pub async fn process_sip_msg(
+        &self,
+        raw: &str,
+        src: SocketAddr,
+    ) -> Result<Option<String>> {
+        let msg = match SipMessage::parse(raw) {
             Ok(m) => m,
             Err(e) => {
                 warn!("Failed to parse SIP message from {}: {}", src, e);
-                return Ok(());
+                return Ok(None);
             }
         };
 
@@ -413,7 +425,7 @@ impl SipHandler {
             None => {
                 // SIP response from callee — relay back to the original caller.
                 self.relay_response(&msg).await;
-                return Ok(());
+                return Ok(None);
             }
         };
 
@@ -429,7 +441,7 @@ impl SipHandler {
             "SUBSCRIBE" => self.presence.handle_subscribe(&msg, src).await,
             "ACK" => {
                 self.proxy.handle_ack(&msg, src).await?;
-                return Ok(());
+                return Ok(None);
             }
             "BYE" => self.proxy.handle_bye(&msg, src).await,
             "CANCEL" => self.proxy.handle_cancel(&msg, src).await,
@@ -445,18 +457,19 @@ impl SipHandler {
         };
 
         match response {
-            Ok(resp) => {
-                self.socket.send_to(resp.as_bytes(), src).await?;
-                debug!("Sent {} response to {}", method, src);
-            }
+            Ok(resp) => Ok(Some(resp)),
             Err(e) => {
                 warn!("Error handling {}: {}", method, e);
                 let err_resp = base_response(&msg, 500, "Internal Server Error").build();
-                let _ = self.socket.send_to(err_resp.as_bytes(), src).await;
+                Ok(Some(err_resp))
             }
         }
+    }
 
-        Ok(())
+    /// Handle a SIP message received over TCP/TLS. Returns the response to send
+    /// back on the same connection, or None if no reply is needed.
+    pub async fn handle_tcp_msg(&self, raw: &str, src: SocketAddr) -> Result<Option<String>> {
+        self.process_sip_msg(raw, src).await
     }
 
     /// Relay a SIP response (e.g. 180, 200) from the callee back to the original caller.
