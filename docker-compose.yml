@@ -12,7 +12,6 @@ services:
       MYSQL_PASSWORD: sip3pass
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./migrations:/docker-entrypoint-initdb.d
     ports:
       - "3306:3306"
     healthcheck:
