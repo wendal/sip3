@@ -9,6 +9,16 @@ use serde_json::{json, Value};
 use super::AppState;
 use crate::models::{Account, CreateAccount, UpdateAccount};
 
+pub const SIP_USERNAME_RULE_MESSAGE: &str = "SIP username must be a 3-6 digit extension";
+
+pub fn validate_sip_username(username: &str) -> Result<(), &'static str> {
+    if (3..=6).contains(&username.len()) && username.chars().all(|c| c.is_ascii_digit()) {
+        Ok(())
+    } else {
+        Err(SIP_USERNAME_RULE_MESSAGE)
+    }
+}
+
 pub async fn list(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
     let accounts: Vec<Account> = sqlx::query_as(
         "SELECT a.id, a.username, a.password_hash, a.ha1_hash, a.display_name,
@@ -38,6 +48,8 @@ pub async fn create(
             "username and password are required".to_string(),
         ));
     }
+    validate_sip_username(&body.username)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message.to_string()))?;
 
     let password_hash = hash(&body.password, DEFAULT_COST)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

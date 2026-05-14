@@ -259,7 +259,7 @@ SIP 电话(TLS) ──TLS 5061──┘         │
 | 端口       | 5060 (UDP) / 5061 (TLS) |
 | 协议       | UDP / TLS / WebSocket |
 | 域名       | sip.air32.cn      |
-| 用户名     | alice             |
+| 用户名     | 1001              |
 | 密码       | password123       |
 
 浏览器用户访问 `/phone` 页面，输入 SIP 账号密码即可直接通话。

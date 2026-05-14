@@ -12,6 +12,7 @@ use super::media::{
 use super::presence::Presence;
 use super::proxy::Proxy;
 use super::registrar::Registrar;
+use super::transport::TransportRegistry;
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
 
@@ -25,10 +26,18 @@ pub type PendingDialogs = Arc<tokio::sync::Mutex<HashMap<String, SocketAddr>>>;
 pub struct DialogInfo {
     pub caller_addr: SocketAddr,
     pub callee_addr: SocketAddr,
+    pub caller_is_stream: bool,
+    pub callee_is_stream: bool,
 }
 
 /// Shared map from SIP Call-ID to established dialog info.
 pub type ActiveDialogs = Arc<tokio::sync::Mutex<HashMap<String, DialogInfo>>>;
+
+#[derive(Clone)]
+pub struct DialogStores {
+    pub pending: PendingDialogs,
+    pub active: ActiveDialogs,
+}
 
 /// Parsed SIP request or response
 #[derive(Debug, Clone)]
@@ -361,14 +370,22 @@ pub struct SipHandler {
     registrar: Registrar,
     proxy: Proxy,
     pending_dialogs: PendingDialogs,
+    active_dialogs: ActiveDialogs,
     media_relay: MediaRelay,
     presence: Presence,
     webrtc_gateway: Arc<WebRtcGateway>,
+    transport_registry: TransportRegistry,
 }
 
 impl SipHandler {
     pub fn with_socket(cfg: Config, pool: MySqlPool, socket: Arc<UdpSocket>) -> Self {
         let pending_dialogs: PendingDialogs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let active_dialogs: ActiveDialogs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let dialog_stores = DialogStores {
+            pending: pending_dialogs.clone(),
+            active: active_dialogs.clone(),
+        };
+        let transport_registry = TransportRegistry::default();
         let media_relay = MediaRelay::new(
             cfg.server.public_ip.clone(),
             cfg.server.rtp_port_min,
@@ -385,9 +402,10 @@ impl SipHandler {
             pool,
             cfg.clone(),
             socket.clone(),
-            pending_dialogs.clone(),
+            dialog_stores,
             media_relay.clone(),
             webrtc_gateway.clone(),
+            transport_registry.clone(),
         );
         Self {
             cfg,
@@ -395,9 +413,11 @@ impl SipHandler {
             registrar,
             proxy,
             pending_dialogs,
+            active_dialogs,
             media_relay,
             presence,
             webrtc_gateway,
+            transport_registry,
         }
     }
 
@@ -410,6 +430,21 @@ impl SipHandler {
     /// Expose the WebRTC gateway for background cleanup.
     pub fn webrtc_gateway(&self) -> &Arc<WebRtcGateway> {
         &self.webrtc_gateway
+    }
+
+    pub fn register_stream(&self, src: SocketAddr) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+        self.transport_registry.register(src)
+    }
+
+    pub fn unregister_stream(&self, src: SocketAddr) {
+        self.transport_registry.unregister(src);
+    }
+
+    async fn send_to_addr(&self, message: String, addr: SocketAddr) -> Result<()> {
+        if !self.transport_registry.send(addr, message.clone()) {
+            self.socket.send_to(message.as_bytes(), addr).await?;
+        }
+        Ok(())
     }
 
     pub async fn handle_datagram(&self, data: Vec<u8>, src: SocketAddr) -> Result<()> {
@@ -500,13 +535,20 @@ impl SipHandler {
         };
 
         if let Some(addr) = caller_addr {
+            let stream_to_stream = {
+                let active = self.active_dialogs.lock().await;
+                active
+                    .get(&call_id)
+                    .map(|d| d.caller_is_stream && d.callee_is_stream)
+                    .unwrap_or(false)
+            };
             // Strip the Via we added when forwarding the INVITE.
             let relayed = strip_proxy_via(&msg.raw, &self.cfg.server.sip_domain);
 
             // On a 200 OK to an INVITE that carries SDP, substitute the appropriate SDP.
             // If this is a WebRTC call, use the stored WebRTC answer SDP.
             // Otherwise rewrite the body so the caller sends RTP to our relay_b port.
-            let relayed = if is_invite_200_ok_with_sdp(msg) {
+            let relayed = if is_invite_200_ok_with_sdp(msg) && !stream_to_stream {
                 if let Some(answer_sdp) = self.webrtc_gateway.get_answer_sdp(&call_id).await {
                     // WebRTC call: set SIP phone's RTP address, return our WebRTC answer.
                     if let Some(sip_rtp_addr) = sdp_rtp_addr(&msg.body) {
@@ -524,7 +566,7 @@ impl SipHandler {
                 relayed
             };
 
-            if let Err(e) = self.socket.send_to(relayed.as_bytes(), addr).await {
+            if let Err(e) = self.send_to_addr(relayed, addr).await {
                 warn!("Failed to relay response to {}: {}", addr, e);
             } else {
                 debug!(

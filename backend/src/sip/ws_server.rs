@@ -122,43 +122,56 @@ where
 {
     debug!("WS/WSS connection from {}", src);
     let (mut sink, mut stream) = ws_stream.split();
+    let mut outbound = handler.register_stream(src);
 
-    while let Some(frame) = stream.next().await {
-        let frame = match frame {
-            Ok(f) => f,
-            Err(e) => {
-                debug!("WS read error from {}: {}", src, e);
-                break;
+    loop {
+        tokio::select! {
+            frame = stream.next() => {
+                let Some(frame) = frame else { break };
+                let frame = match frame {
+                    Ok(f) => f,
+                    Err(e) => {
+                        debug!("WS read error from {}: {}", src, e);
+                        break;
+                    }
+                };
+
+                let text = match frame {
+                    Message::Text(t) => t,
+                    Message::Binary(b) => match String::from_utf8(b) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    },
+                    Message::Ping(data) => {
+                        let _ = sink.send(Message::Pong(data)).await;
+                        continue;
+                    }
+                    Message::Close(_) => break,
+                    _ => continue,
+                };
+
+                debug!("WS SIP from {} ({} bytes)", src, text.len());
+                match handler.handle_tcp_msg(&text, src).await {
+                    Ok(Some(resp)) => {
+                        if let Err(e) = sink.send(Message::Text(resp)).await {
+                            warn!("WS write error to {}: {}", src, e);
+                            break;
+                        }
+                    }
+                    Ok(None) => {} // ACK, relayed response — no reply needed
+                    Err(e) => warn!("WS SIP processing error from {}: {}", src, e),
+                }
             }
-        };
-
-        let text = match frame {
-            Message::Text(t) => t,
-            Message::Binary(b) => match String::from_utf8(b) {
-                Ok(s) => s,
-                Err(_) => continue,
-            },
-            Message::Ping(data) => {
-                let _ = sink.send(Message::Pong(data)).await;
-                continue;
-            }
-            Message::Close(_) => break,
-            _ => continue,
-        };
-
-        debug!("WS SIP from {} ({} bytes)", src, text.len());
-        match handler.handle_tcp_msg(&text, src).await {
-            Ok(Some(resp)) => {
-                if let Err(e) = sink.send(Message::Text(resp)).await {
+            Some(message) = outbound.recv() => {
+                if let Err(e) = sink.send(Message::Text(message)).await {
                     warn!("WS write error to {}: {}", src, e);
                     break;
                 }
             }
-            Ok(None) => {} // ACK, relayed response — no reply needed
-            Err(e) => warn!("WS SIP processing error from {}: {}", src, e),
         }
     }
 
+    handler.unregister_stream(src);
     debug!("WS/WSS connection closed from {}", src);
     Ok(())
 }

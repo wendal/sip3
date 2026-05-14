@@ -124,7 +124,7 @@ Configure your SIP client (Linphone, Zoiper, etc.):
 | Port        | 5060                     |
 | Protocol    | UDP                      |
 | Domain      | sip.air32.cn             |
-| Username    | alice (or other user)    |
+| Username    | 1001 (or other extension) |
 | Password    | password123 (from seed)  |
 | Auth Method | Digest MD5               |
 

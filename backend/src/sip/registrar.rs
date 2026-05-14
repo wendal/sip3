@@ -12,6 +12,10 @@ use super::handler::{
 use super::presence::{Presence, PresenceStatus};
 use crate::config::Config;
 
+pub const ACCOUNT_LOOKUP_SQL: &str = "\
+    SELECT COALESCE(ha1_hash, ''), enabled
+    FROM sip_accounts WHERE username = ? AND domain = ?";
+
 #[derive(Clone)]
 pub struct Registrar {
     pool: MySqlPool,
@@ -49,16 +53,13 @@ impl Registrar {
         // Account lookup by (username, domain) so the same username can exist in
         // multiple domains (AoR = user@domain).
         let domain = &self.cfg.server.sip_domain;
-        let row: Option<(i64, String, i8)> = sqlx::query_as(
-            "SELECT id, COALESCE(ha1_hash, ''), enabled
-             FROM sip_accounts WHERE username = ? AND domain = ?",
-        )
-        .bind(&username)
-        .bind(domain)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String, i8)> = sqlx::query_as(ACCOUNT_LOOKUP_SQL)
+            .bind(&username)
+            .bind(domain)
+            .fetch_optional(&self.pool)
+            .await?;
 
-        let (_, ha1, enabled) = match row {
+        let (ha1, enabled) = match row {
             Some(r) => r,
             None => {
                 warn!("REGISTER for unknown user: {}@{}", username, domain);

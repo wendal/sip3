@@ -7,11 +7,25 @@ use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
 use super::handler::{
-    base_response, extract_uri, uri_username, ActiveDialogs, DialogInfo, PendingDialogs, SipMessage,
+    base_response, extract_uri, uri_username, ActiveDialogs, DialogInfo, DialogStores,
+    PendingDialogs, SipMessage,
 };
 use super::media::{is_webrtc_sdp, make_plain_rtp_sdp, rewrite_sdp, MediaRelay};
+use super::transport::TransportRegistry;
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
+
+pub const CALLER_ACCOUNT_EXISTS_SQL: &str = "\
+    SELECT 1 FROM sip_accounts
+    WHERE username = ? AND domain = ? AND enabled = 1";
+
+pub fn is_websocket_contact_uri(contact_uri: &str) -> bool {
+    contact_uri.to_ascii_lowercase().contains("transport=ws")
+}
+
+pub fn should_preserve_webrtc_sdp_for_target(contact_uri: &str, body: &str) -> bool {
+    is_websocket_contact_uri(contact_uri) && is_webrtc_sdp(body)
+}
 
 #[derive(Clone)]
 pub struct Proxy {
@@ -25,6 +39,7 @@ pub struct Proxy {
     /// Used for bidirectional BYE/INFO routing.
     active_dialogs: ActiveDialogs,
     webrtc_gateway: Arc<WebRtcGateway>,
+    transport_registry: TransportRegistry,
 }
 
 impl Proxy {
@@ -32,18 +47,20 @@ impl Proxy {
         pool: MySqlPool,
         cfg: Config,
         socket: Arc<UdpSocket>,
-        pending_dialogs: PendingDialogs,
+        dialog_stores: DialogStores,
         media_relay: MediaRelay,
         webrtc_gateway: Arc<WebRtcGateway>,
+        transport_registry: TransportRegistry,
     ) -> Self {
         Self {
             pool,
             cfg,
             socket,
-            pending_dialogs,
+            pending_dialogs: dialog_stores.pending,
             media_relay,
-            active_dialogs: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            active_dialogs: dialog_stores.active,
             webrtc_gateway,
+            transport_registry,
         }
     }
 
@@ -73,13 +90,11 @@ impl Proxy {
         // Verify the caller has an enabled account in our domain before
         // proxying any calls — prevents unauthenticated call injection.
         if caller != "unknown" {
-            let caller_ok: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM sip_accounts WHERE username = ? AND domain = ? AND enabled = 1",
-            )
-            .bind(&caller)
-            .bind(&domain)
-            .fetch_optional(&self.pool)
-            .await?;
+            let caller_ok: Option<(i32,)> = sqlx::query_as(CALLER_ACCOUNT_EXISTS_SQL)
+                .bind(&caller)
+                .bind(&domain)
+                .fetch_optional(&self.pool)
+                .await?;
 
             if caller_ok.is_none() {
                 warn!("INVITE from unrecognised caller: {}@{}", caller, domain);
@@ -106,6 +121,8 @@ impl Proxy {
         };
 
         let target_addr: SocketAddr = format!("{}:{}", source_ip, source_port).parse()?;
+        let caller_is_stream = self.transport_registry.contains(src);
+        let callee_is_stream = self.transport_registry.contains(target_addr);
 
         // Record call attempt
         let now = Utc::now().naive_utc();
@@ -136,12 +153,16 @@ impl Proxy {
                 DialogInfo {
                     caller_addr: src,
                     callee_addr: target_addr,
+                    caller_is_stream,
+                    callee_is_stream,
                 },
             );
         }
 
         // Allocate media for this call: WebRTC INVITE or plain SIP.
-        let rewritten_body = if !msg.body.is_empty() && is_webrtc_sdp(&msg.body) {
+        let rewritten_body = if should_preserve_webrtc_sdp_for_target(&contact_uri, &msg.body) {
+            None
+        } else if !msg.body.is_empty() && is_webrtc_sdp(&msg.body) {
             // Browser-originated WebRTC INVITE: create a WebRTC session and
             // replace the WebRTC SDP with a plain RTP offer for the SIP phone.
             match self
@@ -182,9 +203,7 @@ impl Proxy {
 
         // Forward INVITE to callee (with rewritten SDP and Record-Route).
         let forwarded = self.build_forwarded_invite(msg, &contact_uri, max_fwd - 1, rewritten_body);
-        self.socket
-            .send_to(forwarded.as_bytes(), target_addr)
-            .await?;
+        self.send_sip(forwarded, target_addr).await?;
 
         info!(
             "Proxied INVITE from {} to {} at {}",
@@ -192,6 +211,13 @@ impl Proxy {
         );
 
         Ok(base_response(msg, 100, "Trying").build())
+    }
+
+    async fn send_sip(&self, message: String, target: SocketAddr) -> Result<()> {
+        if !self.transport_registry.send(target, message.clone()) {
+            self.socket.send_to(message.as_bytes(), target).await?;
+        }
+        Ok(())
     }
 
     fn build_forwarded_invite(
@@ -258,7 +284,7 @@ impl Proxy {
         };
 
         if let Some(target) = callee_addr {
-            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            let _ = self.send_sip(msg.raw.clone(), target).await;
             info!("Forwarded ACK for call {} to {}", call_id, target);
         } else {
             // Fallback: look up callee registration from DB.
@@ -279,7 +305,7 @@ impl Proxy {
 
                 if let Some((ip, port)) = row {
                     if let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                        let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+                        let _ = self.send_sip(msg.raw.clone(), target).await;
                         info!("Forwarded ACK (fallback) to {} at {}", callee, target);
                     }
                 }
@@ -319,7 +345,7 @@ impl Proxy {
         self.webrtc_gateway.remove_session(&call_id).await;
 
         if let Some(target) = forward_addr {
-            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            let _ = self.send_sip(msg.raw.clone(), target).await;
             info!("Forwarded BYE to {}", target);
         } else {
             // Fallback: route by request-URI (no active dialog found).
@@ -340,7 +366,7 @@ impl Proxy {
 
                 if let Some((ip, port)) = row {
                     if let Ok(fallback) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                        let _ = self.socket.send_to(msg.raw.as_bytes(), fallback).await;
+                        let _ = self.send_sip(msg.raw.clone(), fallback).await;
                         info!("Forwarded BYE (fallback) to {} at {}", callee, fallback);
                     }
                 }
@@ -368,7 +394,7 @@ impl Proxy {
         };
 
         if let Some(target) = callee_addr {
-            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            let _ = self.send_sip(msg.raw.clone(), target).await;
             info!("Forwarded CANCEL for call {} to {}", call_id, target);
         } else {
             warn!("No dialog found to forward CANCEL for call_id: {}", call_id);
@@ -405,7 +431,7 @@ impl Proxy {
 
         match forward_addr {
             Some(target) => {
-                let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+                let _ = self.send_sip(msg.raw.clone(), target).await;
                 info!("Forwarded REFER for call {} to {}", call_id, target);
                 Ok(base_response(msg, 202, "Accepted").build())
             }
@@ -432,7 +458,7 @@ impl Proxy {
         };
 
         if let Some(target) = forward_addr {
-            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            let _ = self.send_sip(msg.raw.clone(), target).await;
             info!("Forwarded NOTIFY for call {} to {}", call_id, target);
         } else {
             warn!("No active dialog for NOTIFY call_id: {}", call_id);
@@ -459,7 +485,7 @@ impl Proxy {
         };
 
         if let Some(target) = forward_addr {
-            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            let _ = self.send_sip(msg.raw.clone(), target).await;
             info!("Forwarded INFO for call {} to {}", call_id, target);
         } else {
             warn!("No active dialog for INFO call_id: {}", call_id);

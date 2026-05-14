@@ -3,12 +3,17 @@
 
 #[cfg(test)]
 mod tests {
+    use sip3_backend::api::accounts::validate_sip_username;
     use sip3_backend::sip::handler::{
         extract_uri, md5_hex, normalize_header_name, parse_auth_params, strip_proxy_via,
         uri_username, SipMessage,
     };
     use sip3_backend::sip::media::{rewrite_sdp, sdp_audio_port, sdp_has_crypto};
-    use sip3_backend::sip::registrar::{generate_nonce, validate_nonce};
+    use sip3_backend::sip::proxy::{
+        should_preserve_webrtc_sdp_for_target, CALLER_ACCOUNT_EXISTS_SQL,
+    };
+    use sip3_backend::sip::registrar::{generate_nonce, validate_nonce, ACCOUNT_LOOKUP_SQL};
+    use sip3_backend::sip::transport::TransportRegistry;
 
     // ── SipMessage::parse ────────────────────────────────────────────────────
 
@@ -218,6 +223,93 @@ mod tests {
         };
         nonce.replace_range(0..1, &bad_char.to_string());
         assert!(!validate_nonce(&nonce, secret, 300));
+    }
+
+    #[test]
+    fn test_account_existence_queries_do_not_decode_unsigned_ids() {
+        assert!(
+            !ACCOUNT_LOOKUP_SQL.to_lowercase().contains("select id"),
+            "REGISTER account lookup must not decode BIGINT UNSIGNED id into a signed Rust integer"
+        );
+        assert!(
+            !CALLER_ACCOUNT_EXISTS_SQL
+                .to_lowercase()
+                .contains("select id"),
+            "INVITE caller lookup must not decode BIGINT UNSIGNED id into a signed Rust integer"
+        );
+    }
+
+    #[test]
+    fn test_websocket_callee_preserves_webrtc_sdp() {
+        let webrtc_sdp = "v=0\r\n\
+                          m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+                          a=fingerprint:sha-256 ABCD\r\n";
+
+        assert!(should_preserve_webrtc_sdp_for_target(
+            "sip:abc@example.invalid;transport=ws",
+            webrtc_sdp
+        ));
+        assert!(!should_preserve_webrtc_sdp_for_target(
+            "sip:1001@192.0.2.10:5060",
+            webrtc_sdp
+        ));
+    }
+
+    #[test]
+    fn test_transport_registry_routes_messages_to_stream_connections() {
+        let registry = TransportRegistry::default();
+        let addr = "127.0.0.1:54430".parse().unwrap();
+        let mut rx = registry.register(addr);
+
+        assert!(registry.send(
+            addr,
+            "INVITE sip:1001@example.com SIP/2.0\r\n\r\n".to_string()
+        ));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            "INVITE sip:1001@example.com SIP/2.0\r\n\r\n"
+        );
+
+        registry.unregister(addr);
+        assert!(!registry.send(addr, "BYE sip:1001@example.com SIP/2.0\r\n\r\n".to_string()));
+    }
+
+    #[test]
+    fn test_sip_username_must_be_three_to_six_digits() {
+        for username in ["100", "1001", "999999"] {
+            assert!(
+                validate_sip_username(username).is_ok(),
+                "{username} should be accepted as a dialable extension"
+            );
+        }
+
+        for username in ["", "12", "1000000", "alice", "100a", "10 01"] {
+            assert!(
+                validate_sip_username(username).is_err(),
+                "{username:?} should be rejected because phone dialing only supports 3-6 digit extensions"
+            );
+        }
+    }
+
+    #[test]
+    fn test_numeric_seed_migration_replaces_legacy_default_accounts() {
+        for seed_sql in [
+            include_str!("../migrations/008_numeric_seed_accounts.sql"),
+            include_str!("../../migrations/008_numeric_seed_accounts.sql"),
+        ] {
+            for extension in ["1001", "1002", "1003"] {
+                assert!(
+                    seed_sql.contains(&format!("'{extension}'")),
+                    "numeric seed migration should create extension {extension}"
+                );
+            }
+            for legacy_username in ["alice", "bob", "charlie"] {
+                assert!(
+                    seed_sql.contains(&format!("'{legacy_username}'")),
+                    "numeric seed migration should remove legacy username {legacy_username}"
+                );
+            }
+        }
     }
 
     #[test]

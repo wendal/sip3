@@ -45,6 +45,7 @@
           {{ callStateLabel }}
           <span v-if="callState === 'active'" class="timer">{{ formatDuration(callDuration) }}</span>
         </div>
+        <div v-if="callError" class="call-error">{{ callError }}</div>
       </div>
 
       <!-- Incoming Call -->
@@ -62,7 +63,7 @@
 
       <!-- Dial Pad (idle or dialing) -->
       <div v-if="callState === 'idle' || callState === 'dialing'" class="dialpad">
-        <div v-for="row in dialKeys" :key="row[0]" class="key-row">
+        <div v-for="row in DIALPAD_KEYS" :key="row.map(key => key.digit).join('')" class="key-row">
           <button
             v-for="key in row"
             :key="key.digit"
@@ -73,20 +74,16 @@
             <span class="sub">{{ key.sub }}</span>
           </button>
         </div>
-        <div class="key-row">
-          <button class="key-btn" @click="pressKey('*')"><span class="digit">*</span></button>
+        <div class="key-row action-row">
           <button class="key-btn key-call" :disabled="!displayNumber || callState === 'dialing'" @click="makeCall">
             <el-icon><Phone /></el-icon>
           </button>
-          <button class="key-btn" @click="pressKey('#')"><span class="digit">#</span></button>
-        </div>
-        <div class="key-row">
           <button class="key-btn key-clear" @click="displayNumber = displayNumber.slice(0, -1)">⌫</button>
         </div>
       </div>
 
       <!-- In-Call Controls -->
-      <div v-if="callState === 'active'" class="incall-controls">
+      <div v-if="activeCallStates.includes(callState)" class="incall-controls">
         <el-button :type="muted ? 'warning' : ''" size="large" circle @click="toggleMute">
           <el-icon><Microphone /></el-icon>
         </el-button>
@@ -103,9 +100,12 @@
 
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
+import { activeCallStates, callFailureMessage } from '../utils/callUiState.mjs'
+import { DIALPAD_KEYS } from '../utils/dialpad.mjs'
 import {
   UserAgent,
   Registerer,
+  RegistererState,
   Inviter,
   SessionState,
   Web,
@@ -131,6 +131,7 @@ const statusMsg = ref('')
 const displayNumber = ref('')
 const callState = ref('idle') // idle | incoming | dialing | active
 const callLabel = ref('')
+const callError = ref('')
 const muted = ref(false)
 const callDuration = ref(0)
 const remoteAudio = ref(null)
@@ -142,12 +143,6 @@ const callStateLabel = computed(() => ({
   dialing: '呼叫中…',
   active: '通话中',
 }[callState.value] || ''))
-
-const dialKeys = [
-  [{ digit: '1', sub: '' }, { digit: '2', sub: 'ABC' }, { digit: '3', sub: 'DEF' }],
-  [{ digit: '4', sub: 'GHI' }, { digit: '5', sub: 'JKL' }, { digit: '6', sub: 'MNO' }],
-  [{ digit: '7', sub: 'PQRS' }, { digit: '8', sub: 'TUV' }, { digit: '9', sub: 'WXYZ' }],
-]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function formatDuration(secs) {
@@ -199,8 +194,8 @@ function attachSession(session, inbound) {
       stopCallTimer()
       callState.value = 'idle'
       callLabel.value = ''
-      muted.value = false
       currentSession.value = null
+      muted.value = false
       if (remoteAudio.value) remoteAudio.value.srcObject = null
     }
   })
@@ -275,9 +270,10 @@ async function connect() {
 
     const reg = new Registerer(userAgent)
     reg.stateChange.addListener((state) => {
-      registered.value = state === 'Registered'
+      registered.value = state === RegistererState.Registered
     })
     await reg.register()
+    registered.value = reg.state === RegistererState.Registered
 
     ua.value = userAgent
     registerer.value = reg
@@ -312,10 +308,20 @@ async function makeCall() {
   const target = UserAgent.makeURI(`sip:${displayNumber.value}@${form.value.domain}`)
   if (!target) return
   callLabel.value = displayNumber.value
+  callError.value = ''
+  callState.value = 'dialing'
   displayNumber.value = ''
   const inviter = new Inviter(ua.value, target)
   attachSession(inviter, false)
-  await inviter.invite()
+  try {
+    await inviter.invite({
+      sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
+    })
+  } catch (error) {
+    callError.value = callFailureMessage(error)
+    callState.value = 'idle'
+    currentSession.value = null
+  }
 }
 
 // ── Incoming call actions ─────────────────────────────────────────────────────
@@ -334,11 +340,16 @@ function rejectCall() {
 // ── In-call actions ───────────────────────────────────────────────────────────
 function hangup() {
   if (!currentSession.value) return
-  if (currentSession.value.state === SessionState.Established) {
-    currentSession.value.bye()
+  const session = currentSession.value
+  callState.value = 'idle'
+  currentSession.value = null
+  callLabel.value = ''
+  if (session.state === SessionState.Established) {
+    session.bye()
+  } else if (session.state === SessionState.Initial || session.state === SessionState.Establishing) {
+    session.cancel?.()
   } else {
-    currentSession.value.cancel?.()
-    currentSession.value.reject?.({ statusCode: 487 })
+    session.reject?.({ statusCode: 487 })
   }
 }
 
@@ -456,6 +467,12 @@ onUnmounted(() => disconnect())
 }
 
 .timer { font-size: 12px; color: #999; }
+
+.call-error {
+  color: #f56c6c;
+  font-size: 13px;
+  margin-top: 4px;
+}
 
 /* Incoming panel */
 .incoming-panel {

@@ -58,7 +58,7 @@
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑账号' : '添加账号'" width="500px">
       <el-form :model="form" label-width="90px">
         <el-form-item label="用户名" v-if="!editingId">
-          <el-input v-model="form.username" placeholder="alice" />
+          <el-input v-model="form.username" placeholder="1001（3-6 位数字分机号）" />
         </el-form-item>
         <el-form-item label="密码">
           <el-input v-model="form.password" type="password" show-password
@@ -89,6 +89,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useSipStore } from '../store'
+import { isValidSipUsername, SIP_USERNAME_RULE_MESSAGE } from '../utils/sipUsername.mjs'
 
 const store = useSipStore()
 const searchText = ref('')
@@ -142,8 +143,13 @@ const handleSubmit = async () => {
         ElMessage.error('用户名和密码不能为空')
         return
       }
+      const username = form.value.username.trim()
+      if (!isValidSipUsername(username)) {
+        ElMessage.error(SIP_USERNAME_RULE_MESSAGE)
+        return
+      }
       await store.createAccount({
-        username: form.value.username,
+        username,
         password: form.value.password,
         display_name: form.value.display_name,
         domain: form.value.domain,
