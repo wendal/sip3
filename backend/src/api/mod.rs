@@ -20,6 +20,7 @@ pub mod auth;
 pub mod jwt;
 pub mod stats;
 pub mod status;
+pub mod turn;
 
 /// Combined application state passed to all handlers
 #[derive(Clone)]
@@ -163,6 +164,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/turn/credentials", post(turn::credentials))
         .merge(jwt_routes)
         .merge(protected)
         .layer(cors)

@@ -345,6 +345,52 @@ pub fn is_invite_200_ok_with_sdp(msg: &super::handler::SipMessage) -> bool {
     cseq_is_invite && has_sdp
 }
 
+/// Return true if `sdp` looks like a WebRTC SDP (ICE credentials / DTLS fingerprint).
+pub fn is_webrtc_sdp(sdp: &str) -> bool {
+    sdp.lines().any(|l| {
+        let lower = l.trim().to_lowercase();
+        lower.starts_with("a=ice-ufrag:") || lower.starts_with("a=fingerprint:")
+    })
+}
+
+/// Build a minimal plain RTP SDP offer to send to a legacy SIP phone.
+/// The phone returns RTP to `server_ip:sip_rtp_port`.
+pub fn make_plain_rtp_sdp(server_ip: &str, sip_rtp_port: u16) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!(
+        "v=0\r\no=- {ts} {ts} IN IP4 {ip}\r\ns=-\r\nc=IN IP4 {ip}\r\nt=0 0\r\n\
+         m=audio {port} RTP/AVP 0 8\r\n\
+         a=rtpmap:0 PCMU/8000\r\n\
+         a=rtpmap:8 PCMA/8000\r\n\
+         a=sendrecv\r\n",
+        ts = ts,
+        ip = server_ip,
+        port = sip_rtp_port,
+    )
+}
+
+/// Extract the connection IP from the first session-level `c=IN IP4 <addr>` line.
+pub fn sdp_connection_ip(sdp: &str) -> Option<String> {
+    for line in sdp.lines() {
+        if let Some(addr) = line.strip_prefix("c=IN IP4 ") {
+            return Some(addr.trim().to_owned());
+        }
+    }
+    None
+}
+
+/// Parse the SIP phone's audio RTP `SocketAddr` from a SDP body.
+/// Returns `None` if connection IP or audio port cannot be found.
+pub fn sdp_rtp_addr(sdp: &str) -> Option<std::net::SocketAddr> {
+    let ip = sdp_connection_ip(sdp)?;
+    let port = sdp_audio_port(sdp)?;
+    format!("{}:{}", ip, port).parse().ok()
+}
+
 /// Extract the first audio RTP port from a SDP body's `m=audio <port>` line.
 pub fn sdp_audio_port(sdp: &str) -> Option<u16> {
     for line in sdp.lines() {

@@ -7,6 +7,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub auth: AuthConfig,
     pub acl: AclConfig,
+    pub turn: TurnConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -25,6 +26,10 @@ pub struct ServerConfig {
     pub rtp_port_min: u16,
     /// Upper bound of the UDP port range used for RTP media relay.
     pub rtp_port_max: u16,
+    /// Lower bound of the UDP port range used for WebRTC ICE (must be Docker-mapped).
+    pub webrtc_port_min: u16,
+    /// Upper bound of the UDP port range used for WebRTC ICE (must be Docker-mapped).
+    pub webrtc_port_max: u16,
     /// TCP+TLS SIP port (default: 5061). TLS is enabled only when tls_cert is set.
     pub tls_port: u16,
     /// Path to PEM-encoded TLS certificate chain. Empty = TLS disabled.
@@ -66,6 +71,22 @@ pub struct AclConfig {
     pub default_policy: String,
 }
 
+/// Configuration for the built-in TURN credentials API.
+#[derive(Debug, Deserialize, Clone)]
+pub struct TurnConfig {
+    /// Realm for TURN credentials (defaults to `auth.realm` when empty).
+    pub realm: String,
+    /// `static-auth-secret` shared with coturn.
+    /// Empty string disables the `/api/turn/credentials` endpoint.
+    pub secret: String,
+    /// Credential TTL in seconds. coturn uses the embedded expiry timestamp.
+    pub ttl_secs: u64,
+    /// TURN server URI(s) returned to the browser, comma-separated.
+    /// Example: `turn:sip.example.com:3478,turns:sip.example.com:5349`
+    /// Defaults to `turn:{server.public_ip}:3478` when empty.
+    pub server: String,
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
         let settings = config::Config::builder()
@@ -83,7 +104,9 @@ impl Config {
             .set_default("server.allowed_origins", "")?
             .set_default("server.public_ip", "sip.air32.cn")?
             .set_default("server.rtp_port_min", 10000)?
-            .set_default("server.rtp_port_max", 20000)?
+            .set_default("server.rtp_port_max", 10099)?
+            .set_default("server.webrtc_port_min", 20000)?
+            .set_default("server.webrtc_port_max", 20099)?
             .set_default("server.tls_port", 5061)?
             .set_default("server.tls_cert", "")?
             .set_default("server.tls_key", "")?
@@ -98,6 +121,10 @@ impl Config {
             .set_default("auth.jwt_secret", "")?
             .set_default("auth.jwt_expiry_secs", 86400)?
             .set_default("acl.default_policy", "allow")?
+            .set_default("turn.realm", "")?
+            .set_default("turn.secret", "")?
+            .set_default("turn.ttl_secs", 86400u64)?
+            .set_default("turn.server", "")?
             .build()?;
 
         let cfg: Config = settings.try_deserialize()?;

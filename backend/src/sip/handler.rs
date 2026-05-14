@@ -6,10 +6,13 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
-use super::media::{is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp, MediaRelay};
+use super::media::{
+    is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp, sdp_rtp_addr, MediaRelay,
+};
 use super::presence::Presence;
 use super::proxy::Proxy;
 use super::registrar::Registrar;
+use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
 
 /// Shared map from SIP Call-ID to the caller's address, used to relay
@@ -360,6 +363,7 @@ pub struct SipHandler {
     pending_dialogs: PendingDialogs,
     media_relay: MediaRelay,
     presence: Presence,
+    webrtc_gateway: Arc<WebRtcGateway>,
 }
 
 impl SipHandler {
@@ -370,6 +374,11 @@ impl SipHandler {
             cfg.server.rtp_port_min,
             cfg.server.rtp_port_max,
         );
+        let webrtc_gateway = Arc::new(WebRtcGateway::new(
+            cfg.server.public_ip.clone(),
+            cfg.server.rtp_port_min,
+            cfg.server.rtp_port_max,
+        ));
         let presence = Presence::new(pool.clone(), cfg.clone(), socket.clone());
         let registrar = Registrar::new(pool.clone(), cfg.clone(), presence.clone());
         let proxy = Proxy::new(
@@ -378,6 +387,7 @@ impl SipHandler {
             socket.clone(),
             pending_dialogs.clone(),
             media_relay.clone(),
+            webrtc_gateway.clone(),
         );
         Self {
             cfg,
@@ -387,6 +397,7 @@ impl SipHandler {
             pending_dialogs,
             media_relay,
             presence,
+            webrtc_gateway,
         }
     }
 
@@ -394,6 +405,11 @@ impl SipHandler {
     /// background cleanup without requiring a separate reference.
     pub fn media_relay(&self) -> &MediaRelay {
         &self.media_relay
+    }
+
+    /// Expose the WebRTC gateway for background cleanup.
+    pub fn webrtc_gateway(&self) -> &Arc<WebRtcGateway> {
+        &self.webrtc_gateway
     }
 
     pub async fn handle_datagram(&self, data: Vec<u8>, src: SocketAddr) -> Result<()> {
@@ -491,12 +507,17 @@ impl SipHandler {
             // Strip the Via we added when forwarding the INVITE.
             let relayed = strip_proxy_via(&msg.raw, &self.cfg.server.sip_domain);
 
-            // On a 200 OK to an INVITE that carries SDP, rewrite the body so the
-            // caller sends its RTP to our relay_b port instead of the callee's
-            // private address.
-            // `rewrite_content_length` returns the complete SIP message (headers + new body).
+            // On a 200 OK to an INVITE that carries SDP, substitute the appropriate SDP.
+            // If this is a WebRTC call, use the stored WebRTC answer SDP.
+            // Otherwise rewrite the body so the caller sends RTP to our relay_b port.
             let relayed = if is_invite_200_ok_with_sdp(msg) {
-                if let Some(new_sdp) = self.rewrite_200ok_sdp(&call_id, &msg.body).await {
+                if let Some(answer_sdp) = self.webrtc_gateway.get_answer_sdp(&call_id).await {
+                    // WebRTC call: set SIP phone's RTP address, return our WebRTC answer.
+                    if let Some(sip_rtp_addr) = sdp_rtp_addr(&msg.body) {
+                        self.webrtc_gateway.set_sip_peer(&call_id, sip_rtp_addr).await;
+                    }
+                    rewrite_content_length(&relayed, &answer_sdp)
+                } else if let Some(new_sdp) = self.rewrite_200ok_sdp(&call_id, &msg.body).await {
                     rewrite_content_length(&relayed, &new_sdp)
                 } else {
                     relayed
@@ -519,9 +540,10 @@ impl SipHandler {
             if msg.status_code.is_some_and(|c| c >= 200) {
                 self.pending_dialogs.lock().await.remove(&call_id);
             }
-            // On non-2xx final responses, also remove the media session.
+            // On non-2xx final responses, also remove the media session and WebRTC session.
             if msg.status_code.is_some_and(|c| c >= 300) {
                 self.media_relay.remove_session(&call_id).await;
+                self.webrtc_gateway.remove_session(&call_id).await;
             }
         } else {
             debug!(

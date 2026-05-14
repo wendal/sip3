@@ -5,9 +5,11 @@ import Status from '../views/Status.vue'
 import Login from '../views/Login.vue'
 import AdminUsers from '../views/AdminUsers.vue'
 import Acl from '../views/Acl.vue'
+import Phone from '../views/Phone.vue'
 
 const routes = [
   { path: '/login', component: Login, meta: { public: true } },
+  { path: '/phone', component: Phone, meta: { public: true } },
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', component: Dashboard },
   { path: '/accounts', component: Accounts },

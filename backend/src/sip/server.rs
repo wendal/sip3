@@ -105,6 +105,19 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         }
     });
 
+    // Background task: clean up stale WebRTC sessions.
+    let webrtc_gw_cleanup = handler.webrtc_gateway().clone();
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(MEDIA_CLEANUP_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            webrtc_gw_cleanup
+                .cleanup_stale_sessions(MEDIA_SESSION_MAX_AGE_SECS)
+                .await;
+        }
+    });
+
     // Background task: delete expired registration rows to keep the table tidy.
     let pool_cleanup = pool.clone();
     tokio::spawn(async move {

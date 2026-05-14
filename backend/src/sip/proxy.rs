@@ -10,7 +10,8 @@ use super::handler::{
     base_response, extract_uri, uri_username, ActiveDialogs, DialogInfo, PendingDialogs,
     SipMessage,
 };
-use super::media::{rewrite_sdp, MediaRelay};
+use super::media::{is_webrtc_sdp, make_plain_rtp_sdp, rewrite_sdp, MediaRelay};
+use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
 
 #[derive(Clone)]
@@ -24,6 +25,7 @@ pub struct Proxy {
     /// Established dialogs (post-ACK): call-id → (caller_addr, callee_addr).
     /// Used for bidirectional BYE/INFO routing.
     active_dialogs: ActiveDialogs,
+    webrtc_gateway: Arc<WebRtcGateway>,
 }
 
 impl Proxy {
@@ -33,6 +35,7 @@ impl Proxy {
         socket: Arc<UdpSocket>,
         pending_dialogs: PendingDialogs,
         media_relay: MediaRelay,
+        webrtc_gateway: Arc<WebRtcGateway>,
     ) -> Self {
         Self {
             pool,
@@ -41,6 +44,7 @@ impl Proxy {
             pending_dialogs,
             media_relay,
             active_dialogs: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            webrtc_gateway,
         }
     }
 
@@ -137,19 +141,39 @@ impl Proxy {
             );
         }
 
-        // Allocate an RTP media relay session for this call.
-        let rewritten_body = match self.media_relay.allocate_session(call_id.clone()).await {
-            Ok((relay_port_a, _relay_port_b)) => {
-                let public_ip = self.media_relay.public_ip.as_str();
-                if msg.body.is_empty() {
+        // Allocate media for this call: WebRTC INVITE or plain SIP.
+        let rewritten_body = if !msg.body.is_empty() && is_webrtc_sdp(&msg.body) {
+            // Browser-originated WebRTC INVITE: create a WebRTC session and
+            // replace the WebRTC SDP with a plain RTP offer for the SIP phone.
+            match self.webrtc_gateway.create_session(call_id.clone(), &msg.body).await {
+                Ok((_answer_sdp, sip_port)) => {
+                    info!(
+                        "WebRTC session for {}: forwarding with plain RTP port {}",
+                        call_id, sip_port
+                    );
+                    let public_ip = &self.cfg.server.public_ip;
+                    Some(make_plain_rtp_sdp(public_ip, sip_port))
+                }
+                Err(e) => {
+                    warn!("WebRTC session creation failed for {}: {}", call_id, e);
                     None
-                } else {
-                    Some(rewrite_sdp(&msg.body, public_ip, relay_port_a))
                 }
             }
-            Err(e) => {
-                warn!("Failed to allocate media relay for {}: {}", call_id, e);
-                None
+        } else {
+            // Legacy plain-RTP call: allocate a symmetric relay session.
+            match self.media_relay.allocate_session(call_id.clone()).await {
+                Ok((relay_port_a, _relay_port_b)) => {
+                    let public_ip = self.media_relay.public_ip.as_str();
+                    if msg.body.is_empty() {
+                        None
+                    } else {
+                        Some(rewrite_sdp(&msg.body, public_ip, relay_port_a))
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to allocate media relay for {}: {}", call_id, e);
+                    None
+                }
             }
         };
 
@@ -289,12 +313,13 @@ impl Proxy {
 
         self.pending_dialogs.lock().await.remove(&call_id);
         self.media_relay.remove_session(&call_id).await;
+        self.webrtc_gateway.remove_session(&call_id).await;
 
         if let Some(target) = forward_addr {
             let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
-            info!("Forwarded BYE for call {} to {}", call_id, target);
+            info!("Forwarded BYE to {}", target);
         } else {
-            // Fallback: route by request-URI (legacy, handles restarts).
+            // Fallback: route by request-URI (no active dialog found).
             let request_uri = msg.request_uri.as_deref().unwrap_or("");
             let callee = uri_username(request_uri).unwrap_or_default();
             let domain = self.cfg.server.sip_domain.clone();
@@ -311,9 +336,9 @@ impl Proxy {
                 .flatten();
 
                 if let Some((ip, port)) = row {
-                    if let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                        let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
-                        info!("Forwarded BYE (fallback) to {} at {}", callee, target);
+                    if let Ok(fallback) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
+                        let _ = self.socket.send_to(msg.raw.as_bytes(), fallback).await;
+                        info!("Forwarded BYE (fallback) to {} at {}", callee, fallback);
                     }
                 }
             }
@@ -350,6 +375,7 @@ impl Proxy {
         self.pending_dialogs.lock().await.remove(&call_id);
         self.active_dialogs.lock().await.remove(&call_id);
         self.media_relay.remove_session(&call_id).await;
+        self.webrtc_gateway.remove_session(&call_id).await;
 
         info!("Call cancelled: {}", call_id);
         Ok(base_response(msg, 200, "OK").build())

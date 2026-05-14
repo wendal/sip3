@@ -41,7 +41,11 @@ services:
       SIP3__SERVER__PUBLIC_IP: "sip.air32.cn"
       SIP3__SERVER__RTP_PORT_MIN: "10000"
       SIP3__SERVER__RTP_PORT_MAX: "10099"
+      SIP3__SERVER__WEBRTC_PORT_MIN: "20000"
+      SIP3__SERVER__WEBRTC_PORT_MAX: "20099"
       SIP3__AUTH__REALM: "sip.air32.cn"
+      SIP3__TURN__SECRET: ${TURN_SECRET:-change_me_in_production_secret}
+      SIP3__TURN__SERVER: ""
       RUST_LOG: "info"
     ports:
       - "5060:5060/udp"
@@ -50,6 +54,7 @@ services:
       - "5443:5443/tcp"
       - "3000:3000"
       - "10000-10099:10000-10099/udp"
+      - "20000-20099:20000-20099/udp"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 15s
@@ -68,6 +73,39 @@ services:
         condition: service_healthy
     ports:
       - "8030:80"
+
+  coturn:
+    image: coturn/coturn:latest
+    container_name: sip3-coturn
+    restart: unless-stopped
+    # Ports: STUN/TURN UDP+TCP (3478), TURNS TLS (5349), relay range (49152-49200)
+    # For production on Linux, consider `network_mode: host` instead.
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "5349:5349/tcp"
+      - "49152-49200:49152-49200/udp"
+    volumes:
+      - ./docker/coturn.conf:/etc/coturn/turnserver.conf:ro
+    # Override the static-auth-secret and external-ip via environment variables.
+    # TURN_SECRET must match SIP3__TURN__SECRET in the backend service.
+    environment:
+      TURN_SECRET: ${TURN_SECRET:-change_me_in_production_secret}
+    command: >-
+      -n
+      --log-file=stdout
+      --no-cli
+      --realm=${SIP3__AUTH__REALM:-sip.air32.cn}
+      --use-auth-secret
+      --static-auth-secret=${TURN_SECRET:-change_me_in_production_secret}
+      --external-ip=${SIP3__SERVER__PUBLIC_IP:-127.0.0.1}
+      --relay-ip=0.0.0.0
+      --min-port=49152
+      --max-port=49200
+      --no-multicast-peers
+      --denied-peer-ip=10.0.0.0-10.255.255.255
+      --denied-peer-ip=172.16.0.0-172.31.255.255
+      --denied-peer-ip=192.168.0.0-192.168.255.255
 
 volumes:
   mysql_data:
