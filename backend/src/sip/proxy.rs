@@ -355,6 +355,63 @@ impl Proxy {
         Ok(base_response(msg, 200, "OK").build())
     }
 
+    /// Forward a REFER request to the other party in the active dialog.
+    ///
+    /// The proxy responds 202 Accepted immediately; NOTIFY updates from the
+    /// transfer target will be forwarded back to the REFER sender via
+    /// `handle_notify`.
+    pub async fn handle_refer(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
+        let call_id = msg.call_id().unwrap_or("").to_string();
+
+        let forward_addr = {
+            let active = self.active_dialogs.lock().await;
+            active.get(&call_id).map(|d| {
+                if src == d.caller_addr {
+                    d.callee_addr
+                } else {
+                    d.caller_addr
+                }
+            })
+        };
+
+        match forward_addr {
+            Some(target) => {
+                let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+                info!("Forwarded REFER for call {} to {}", call_id, target);
+                Ok(base_response(msg, 202, "Accepted").build())
+            }
+            None => {
+                warn!("No active dialog for REFER call_id: {}", call_id);
+                Ok(base_response(msg, 481, "Call/Transaction Does Not Exist").build())
+            }
+        }
+    }
+
+    /// Transparently proxy an in-dialog NOTIFY (e.g. REFER progress) to the other party.
+    pub async fn handle_notify(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
+        let call_id = msg.call_id().unwrap_or("").to_string();
+
+        let forward_addr = {
+            let active = self.active_dialogs.lock().await;
+            active.get(&call_id).map(|d| {
+                if src == d.caller_addr {
+                    d.callee_addr
+                } else {
+                    d.caller_addr
+                }
+            })
+        };
+
+        if let Some(target) = forward_addr {
+            let _ = self.socket.send_to(msg.raw.as_bytes(), target).await;
+            info!("Forwarded NOTIFY for call {} to {}", call_id, target);
+        } else {
+            warn!("No active dialog for NOTIFY call_id: {}", call_id);
+        }
+
+        Ok(base_response(msg, 200, "OK").build())
+    }
+
     /// Transparently proxy an in-dialog INFO request (e.g. DTMF) to the other party.
     pub async fn handle_info(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
         let call_id = msg.call_id().unwrap_or("").to_string();

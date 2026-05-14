@@ -420,6 +420,8 @@ impl SipHandler {
             "INVITE" => self.proxy.handle_invite(&msg, src).await,
             "OPTIONS" => self.handle_options(&msg),
             "INFO" => self.proxy.handle_info(&msg, src).await,
+            "REFER" => self.proxy.handle_refer(&msg, src).await,
+            "NOTIFY" => self.proxy.handle_notify(&msg, src).await,
             "ACK" => {
                 self.proxy.handle_ack(&msg, src).await?;
                 return Ok(());
@@ -429,7 +431,7 @@ impl SipHandler {
             _ => {
                 warn!("Unsupported SIP method: {}", method);
                 Ok(base_response(&msg, 405, "Method Not Allowed")
-                    .header("Allow", "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO")
+                    .header("Allow", "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY")
                     .build())
             }
         };
@@ -526,7 +528,7 @@ impl SipHandler {
 
     fn handle_options(&self, msg: &SipMessage) -> Result<String> {
         Ok(base_response(msg, 200, "OK")
-            .header("Allow", "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS")
+            .header("Allow", "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY")
             .header("Accept", "application/sdp")
             .build())
     }
