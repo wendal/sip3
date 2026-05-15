@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::AppState;
 use crate::models::Registration;
+use crate::sip::call_cleanup::mark_stale_calls_ended;
 
 pub async fn list_registrations(
     State(state): State<AppState>,
@@ -126,4 +127,35 @@ struct CallWithDuration {
     pub answered_at: Option<chrono::NaiveDateTime>,
     pub ended_at: Option<chrono::NaiveDateTime>,
     pub duration_secs: Option<i64>,
+}
+
+/// Query params for `POST /api/calls/cleanup`.
+#[derive(Debug, Deserialize)]
+pub struct CleanupQuery {
+    /// Close calls whose `started_at` is older than this many hours.
+    /// Defaults to 4. Pass `0` to close every still-open call (the backend
+    /// uses this on startup automatically).
+    pub older_than_hours: Option<i64>,
+}
+
+/// Admin endpoint to mark stale active calls as ended.
+///
+/// Useful when the in-memory dialog state is out of sync with the DB
+/// (process restarts, missing BYE/CANCEL, test leftovers). Returns the
+/// number of rows updated.
+pub async fn cleanup_calls(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<CleanupQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let hours = q.older_than_hours.unwrap_or(4);
+    let threshold = if hours <= 0 { None } else { Some(hours) };
+
+    let cleaned = mark_stale_calls_ended(&state.pool, threshold)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(json!({
+        "cleaned": cleaned,
+        "older_than_hours": hours,
+    })))
 }

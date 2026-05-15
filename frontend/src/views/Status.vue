@@ -57,6 +57,7 @@
               <el-option label="失败" value="failed" />
             </el-select>
             <el-button text :icon="Refresh" @click="store.fetchCalls()" />
+            <el-button text type="warning" @click="handleCleanupCalls">清理陈旧</el-button>
           </div>
         </div>
       </template>
@@ -163,6 +164,34 @@ const handleDeregister = async (row) => {
     await store.fetchRegistrations()
   } catch (e) {
     ElMessage.error(e.response?.data || e.message || '操作失败')
+  }
+}
+
+const handleCleanupCalls = async () => {
+  let hours = 4
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '将关闭 started_at 早于该小时数且仍未结束的通话；填 0 表示关闭全部未结束通话。',
+      '清理陈旧通话',
+      {
+        confirmButtonText: '清理',
+        cancelButtonText: '取消',
+        inputValue: '4',
+        inputPattern: /^\d+$/,
+        inputErrorMessage: '请输入非负整数',
+      }
+    )
+    hours = Number(value)
+  } catch {
+    return
+  }
+  try {
+    const res = await api.post(`/calls/cleanup?older_than_hours=${hours}`)
+    const cleaned = res.data?.cleaned ?? 0
+    ElMessage.success(cleaned > 0 ? `已清理 ${cleaned} 条陈旧通话` : '无需清理')
+    await store.fetchCalls()
+  } catch (e) {
+    ElMessage.error(e.response?.data || e.message || '清理失败')
   }
 }
 

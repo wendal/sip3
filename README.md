@@ -127,6 +127,7 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | GET    | /api/registrations         | List active registrations             |
 | DELETE | /api/registrations/:id     | Force de-register                     |
 | GET    | /api/calls                 | List call records (CDR)               |
+| POST   | /api/calls/cleanup         | Close stale active calls (`?older_than_hours=N`, default 4; pass 0 for all). Backend also runs this automatically at startup and every 5 min. |
 | GET    | /api/messages              | List persisted SIP MESSAGE records    |
 | GET    | /api/stats                 | Dashboard statistics                  |
 | GET    | /api/security/summary      | Security summary (24h failures/blocks) |

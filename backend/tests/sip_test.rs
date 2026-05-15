@@ -5,6 +5,7 @@
 mod tests {
     use sip3_backend::api::accounts::validate_sip_username;
     use sip3_backend::security_guard::{AuthSurface, GuardLimits, SecurityGuard};
+    use sip3_backend::sip::call_cleanup::STALE_CALL_CLEANUP_SQL;
     use sip3_backend::sip::handler::{
         SIP_ALLOW_METHODS, SipMessage, extract_uri, md5_hex, normalize_header_name,
         parse_auth_params, strip_proxy_via, uri_username,
@@ -252,6 +253,32 @@ mod tests {
         };
         nonce.replace_range(0..1, &bad_char.to_string());
         assert!(!validate_nonce(&nonce, secret, 300));
+    }
+
+    #[test]
+    fn test_stale_call_cleanup_sql_targets_only_open_active_calls() {
+        let sql = STALE_CALL_CLEANUP_SQL.to_lowercase();
+        // Must only touch sip_calls, must scope to NULL ended_at, and must
+        // limit to the two "open" statuses so finished calls are not rewritten.
+        assert!(sql.contains("update sip_calls"), "must update sip_calls");
+        assert!(
+            sql.contains("set status = 'ended'") && sql.contains("ended_at = now()"),
+            "must mark rows as ended with a real timestamp"
+        );
+        assert!(
+            sql.contains("ended_at is null"),
+            "must not rewrite rows that already ended"
+        );
+        assert!(
+            sql.contains("status in ('trying', 'answered')"),
+            "must only target rows still considered active"
+        );
+        // The NULL-tolerant predicate lets a single bind value handle both
+        // "close everything" and "older than N hours" cases.
+        assert!(
+            sql.contains("? is null or started_at < date_sub(now(), interval ? hour)"),
+            "must support an optional age threshold"
+        );
     }
 
     #[test]

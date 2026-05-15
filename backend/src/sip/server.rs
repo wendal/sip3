@@ -5,6 +5,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{info, warn};
 
+use super::call_cleanup::mark_stale_calls_ended;
 use super::handler::SipHandler;
 use super::tcp_server;
 use super::ws_server;
@@ -30,10 +31,26 @@ const PRES_CLEANUP_INTERVAL_SECS: u64 = 300; // 5 minutes
 /// How often to reload ACL rules from the database.
 const ACL_REFRESH_INTERVAL_SECS: u64 = 60;
 
+/// How often to close `sip_calls` rows whose dialog never received BYE/CANCEL.
+const CALL_CLEANUP_INTERVAL_SECS: u64 = 300; // 5 minutes
+
+/// Calls older than this with no `ended_at` are considered stale by the
+/// periodic cleanup task. Real conversations rarely run this long.
+const STALE_CALL_AGE_HOURS: i64 = 4;
+
 pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let addr = format!("{}:{}", cfg.server.sip_host, cfg.server.sip_port);
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
     info!("SIP server listening on udp://{}", addr);
+
+    // On startup the in-memory dialog map is empty, so any sip_calls row still
+    // marked active must be a leftover (crash, restart, missing BYE). Close
+    // them all so the "active calls" KPI starts from a clean baseline.
+    match mark_stale_calls_ended(&pool, None).await {
+        Ok(n) if n > 0 => info!("Closed {} stale active call(s) on startup", n),
+        Ok(_) => {}
+        Err(e) => warn!("Startup call cleanup failed: {}", e),
+    }
 
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
     let handler = SipHandler::with_socket(cfg.clone(), pool.clone(), socket.clone());
@@ -160,6 +177,28 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
                 }
                 Err(e) => warn!("Presence cleanup error: {}", e),
                 _ => {}
+            }
+        }
+    });
+
+    // Background task: close stale active sip_calls rows so the Dashboard
+    // "active calls" KPI does not accumulate ghost entries from crashes,
+    // network failures, or any flow where BYE/CANCEL never arrived.
+    let pool_calls = pool.clone();
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(CALL_CLEANUP_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            match mark_stale_calls_ended(&pool_calls, Some(STALE_CALL_AGE_HOURS)).await {
+                Ok(n) if n > 0 => {
+                    info!(
+                        "Closed {} stale active call(s) (>{}h old)",
+                        n, STALE_CALL_AGE_HOURS
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!("Periodic call cleanup error: {}", e),
             }
         }
     });

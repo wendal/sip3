@@ -154,6 +154,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             axum::routing::delete(status::delete_registration),
         )
         .route("/api/calls", get(status::list_calls))
+        .route("/api/calls/cleanup", post(status::cleanup_calls))
         .route("/api/messages", get(messages::list_messages))
         .route("/api/stats", get(stats::get_stats))
         .route("/api/security/events", get(security::list_events))
