@@ -32,12 +32,20 @@ pub struct Voicemail {
     active: Arc<Mutex<HashMap<String, VoicemailCall>>>,
     no_answer: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     recording_state: Arc<Mutex<RecordingCancelState>>,
+    access_pending: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Debug, Default)]
 struct RecordingCancelState {
     recording: HashSet<String>,
     canceled: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordingPersistenceDecision {
+    Insert,
+    DiscardCanceled,
+    DiscardEmpty,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +93,7 @@ impl Voicemail {
             active: Arc::new(Mutex::new(HashMap::new())),
             no_answer: Arc::new(Mutex::new(HashMap::new())),
             recording_state: Arc::new(Mutex::new(RecordingCancelState::default())),
+            access_pending: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -157,6 +166,12 @@ impl Voicemail {
         if call_id.is_empty() {
             return Ok(base_response(msg, 400, "Bad Request").build());
         }
+        let tracked_access =
+            track_access_candidate(&call_id, &self.active, &self.access_pending).await;
+        if let Some((status, reason)) = duplicate_access_candidate_response(tracked_access) {
+            warn!("Duplicate voicemail access INVITE rejected for call_id={call_id}");
+            return Ok(base_response(msg, status, reason).build());
+        }
 
         let caller = msg
             .from_header()
@@ -164,6 +179,7 @@ impl Voicemail {
             .and_then(|u| uri_username(&u))
             .unwrap_or_default();
         if caller.is_empty() {
+            discard_access_candidate(&call_id, &self.access_pending, tracked_access).await;
             return Ok(base_response(msg, 400, "Bad Request").build());
         }
 
@@ -173,6 +189,7 @@ impl Voicemail {
                 "Voicemail access rejected for unknown mailbox {}@{}",
                 caller, domain
             );
+            discard_access_candidate(&call_id, &self.access_pending, tracked_access).await;
             return Ok(base_response(msg, 404, "Not Found").build());
         };
 
@@ -180,6 +197,7 @@ impl Voicemail {
             Ok(n) => n,
             Err(e) => {
                 warn!("Voicemail access SDP rejected for {}: {}", caller, e);
+                discard_access_candidate(&call_id, &self.access_pending, tracked_access).await;
                 return Ok(base_response(msg, 488, "Not Acceptable Here").build());
             }
         };
@@ -197,6 +215,7 @@ impl Voicemail {
             Ok(port) => port,
             Err(e) => {
                 warn!("Voicemail access media allocation failed: {}", e);
+                discard_access_candidate(&call_id, &self.access_pending, tracked_access).await;
                 return Ok(base_response(msg, 500, "Internal Server Error").build());
             }
         };
@@ -219,6 +238,7 @@ impl Voicemail {
                 callee: settings.username.clone(),
             },
         );
+        discard_access_candidate(&call_id, &self.access_pending, tracked_access).await;
 
         if let Some(greeting_key) = settings.greeting_storage_key.clone() {
             let storage = LocalVoicemailStorage::new(PathBuf::from(
@@ -557,18 +577,34 @@ impl Voicemail {
                 }
             };
 
-            if !should_persist {
-                if let Err(e) = storage.delete(&storage_key).await {
-                    warn!(
-                        "Failed to remove canceled voicemail audio {} for {}: {}",
-                        storage_key, recording.call_id, e
+            match recording_persistence_decision(should_persist, duration_secs) {
+                RecordingPersistenceDecision::Insert => {}
+                RecordingPersistenceDecision::DiscardCanceled => {
+                    if let Err(e) = storage.delete(&storage_key).await {
+                        warn!(
+                            "Failed to remove canceled voicemail audio {} for {}: {}",
+                            storage_key, recording.call_id, e
+                        );
+                    }
+                    debug!(
+                        "Discarded canceled voicemail recording for {}",
+                        recording.call_id
                     );
+                    return;
                 }
-                debug!(
-                    "Discarded canceled voicemail recording for {}",
-                    recording.call_id
-                );
-                return;
+                RecordingPersistenceDecision::DiscardEmpty => {
+                    if let Err(e) = storage.delete(&storage_key).await {
+                        warn!(
+                            "Failed to remove empty voicemail audio {} for {}: {}",
+                            storage_key, recording.call_id, e
+                        );
+                    }
+                    debug!(
+                        "Discarded zero-duration voicemail recording for {}",
+                        recording.call_id
+                    );
+                    return;
+                }
             }
 
             let insert_result = sqlx::query(
@@ -590,10 +626,10 @@ impl Voicemail {
                     "Failed to insert voicemail message metadata for {}: {}",
                     recording.call_id, e
                 );
-                if let Err(delete_err) = storage.delete(&storage_key).await {
+                if let Err(e) = storage.delete(&storage_key).await {
                     warn!(
                         "Failed to remove orphan voicemail audio {} after DB error: {}",
-                        storage_key, delete_err
+                        storage_key, e
                     );
                 }
                 return;
@@ -664,6 +700,44 @@ fn delivery_caller(from: Option<&str>) -> Option<String> {
 
 fn duplicate_recording_candidate_response(tracked_recording: bool) -> Option<(u16, &'static str)> {
     (!tracked_recording).then_some((491, "Request Pending"))
+}
+
+fn duplicate_access_candidate_response(tracked_access: bool) -> Option<(u16, &'static str)> {
+    (!tracked_access).then_some((491, "Request Pending"))
+}
+
+fn recording_persistence_decision(
+    should_persist: bool,
+    duration_secs: u32,
+) -> RecordingPersistenceDecision {
+    if !should_persist {
+        RecordingPersistenceDecision::DiscardCanceled
+    } else if duration_secs == 0 {
+        RecordingPersistenceDecision::DiscardEmpty
+    } else {
+        RecordingPersistenceDecision::Insert
+    }
+}
+
+async fn track_access_candidate(
+    call_id: &str,
+    active: &Arc<Mutex<HashMap<String, VoicemailCall>>>,
+    pending: &Arc<Mutex<HashSet<String>>>,
+) -> bool {
+    if active.lock().await.contains_key(call_id) {
+        return false;
+    }
+    pending.lock().await.insert(call_id.to_string())
+}
+
+async fn discard_access_candidate(
+    call_id: &str,
+    pending: &Arc<Mutex<HashSet<String>>>,
+    tracked_access: bool,
+) {
+    if tracked_access {
+        pending.lock().await.remove(call_id);
+    }
 }
 
 async fn track_recording_candidate(
@@ -904,6 +978,44 @@ mod tests {
             Some((491, "Request Pending"))
         );
         assert_eq!(duplicate_recording_candidate_response(true), None);
+    }
+
+    #[test]
+    fn duplicate_access_candidate_gets_request_pending_response() {
+        assert_eq!(
+            duplicate_access_candidate_response(false),
+            Some((491, "Request Pending"))
+        );
+        assert_eq!(duplicate_access_candidate_response(true), None);
+    }
+
+    #[tokio::test]
+    async fn duplicate_access_candidate_is_detected_before_active_insert() {
+        let active = Arc::new(Mutex::new(HashMap::new()));
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+
+        assert!(track_access_candidate("call-123", &active, &pending).await);
+        assert!(!track_access_candidate("call-123", &active, &pending).await);
+    }
+
+    #[test]
+    fn empty_recording_completion_is_not_persisted() {
+        assert_eq!(
+            recording_persistence_decision(true, 0),
+            RecordingPersistenceDecision::DiscardEmpty
+        );
+        assert_eq!(
+            recording_persistence_decision(true, 1),
+            RecordingPersistenceDecision::Insert
+        );
+    }
+
+    #[test]
+    fn canceled_recording_completion_is_not_persisted() {
+        assert_eq!(
+            recording_persistence_decision(false, 1),
+            RecordingPersistenceDecision::DiscardCanceled
+        );
     }
 
     #[test]
