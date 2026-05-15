@@ -1,7 +1,7 @@
 //! Local SIP voicemail endpoint.
 //!
 //! This module owns voicemail-specific local SIP responses and in-memory call
-//! state. Routing into this endpoint is intentionally left to a later task.
+//! state.
 
 use anyhow::Result;
 use rand::Rng;
@@ -10,16 +10,21 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 
-use super::handler::{SipMessage, base_response, extract_uri, uri_username};
-use super::proxy::CALLER_ACCOUNT_EXISTS_SQL;
+use super::handler::{DialogStores, SipMessage, base_response, extract_uri, uri_username};
+use super::media::MediaRelay;
+use super::proxy::{CALLER_ACCOUNT_EXISTS_SQL, build_forwarded_cancel_for_target};
+use super::transport::TransportRegistry;
 use super::voicemail_media::{
     VoicemailDtmf, VoicemailMedia, parse_dtmf_relay, play_wav, record_to_storage,
 };
 use super::voicemail_mwi::VoicemailMwi;
 use super::voicemail_sdp::{build_answer, negotiate_offer};
+use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
 use crate::storage::voicemail::LocalVoicemailStorage;
 
@@ -30,9 +35,22 @@ pub struct Voicemail {
     media: VoicemailMedia,
     mwi: VoicemailMwi,
     active: Arc<Mutex<HashMap<String, VoicemailCall>>>,
-    no_answer: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    no_answer: Arc<Mutex<HashMap<String, NoAnswerTimerEntry>>>,
     recording_state: Arc<Mutex<RecordingCancelState>>,
     access_pending: Arc<Mutex<HashSet<String>>>,
+}
+
+#[derive(Debug)]
+enum NoAnswerTimerEntry {
+    Ringing(tokio::task::JoinHandle<()>),
+    Fired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoAnswerTimerCancel {
+    Canceled,
+    AlreadyFired,
+    NotFound,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +113,10 @@ impl Voicemail {
             recording_state: Arc::new(Mutex::new(RecordingCancelState::default())),
             access_pending: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    pub fn mwi(&self) -> &VoicemailMwi {
+        &self.mwi
     }
 
     pub async fn is_voicemail_call(&self, call_id: &str) -> bool {
@@ -392,6 +414,7 @@ impl Voicemail {
 
     pub async fn handle_ack(&self, msg: &SipMessage) {
         let call_id = msg.call_id().unwrap_or("");
+        self.cancel_no_answer_timer(call_id).await;
         debug!(
             "Voicemail ACK received for {}; recording tasks start immediately after 200 OK in this MVP",
             call_id
@@ -473,10 +496,125 @@ impl Voicemail {
         Ok(base_response(msg, 200, "OK").build())
     }
 
-    pub async fn cancel_no_answer_timer(&self, call_id: &str) {
-        if let Some(handle) = self.no_answer.lock().await.remove(call_id) {
-            handle.abort();
-            debug!("Cancelled voicemail no-answer timer for {}", call_id);
+    pub async fn cancel_no_answer_timer(&self, call_id: &str) -> NoAnswerTimerCancel {
+        match self.no_answer.lock().await.remove(call_id) {
+            Some(NoAnswerTimerEntry::Ringing(handle)) => {
+                handle.abort();
+                debug!("Cancelled voicemail no-answer timer for {}", call_id);
+                NoAnswerTimerCancel::Canceled
+            }
+            Some(NoAnswerTimerEntry::Fired) => {
+                debug!("Voicemail no-answer timer already fired for {}", call_id);
+                NoAnswerTimerCancel::AlreadyFired
+            }
+            None => NoAnswerTimerCancel::NotFound,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_no_answer_timer(
+        &self,
+        msg: SipMessage,
+        src: SocketAddr,
+        target_addr: SocketAddr,
+        target_uri: String,
+        callee: String,
+        no_answer_secs: u32,
+        transport_registry: TransportRegistry,
+        socket: Arc<UdpSocket>,
+        dialog_stores: DialogStores,
+        media_relay: MediaRelay,
+        webrtc_gateway: Arc<WebRtcGateway>,
+    ) {
+        let call_id = msg.call_id().unwrap_or("").to_string();
+        if call_id.is_empty() || callee.is_empty() {
+            warn!("Skipping voicemail no-answer timer with missing call-id or callee");
+            return;
+        }
+
+        let voicemail = self.clone();
+        let timers = self.no_answer.clone();
+        let domain = self.cfg.server.sip_domain.clone();
+        let max_fwd = msg
+            .header("max-forwards")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(70)
+            .saturating_sub(1);
+        let delay = Duration::from_secs(u64::from(no_answer_secs.max(1)));
+        let timer_call_id = call_id.clone();
+
+        let handle = tokio::spawn(async move {
+            sleep(delay).await;
+
+            let should_fire = {
+                let mut timers = timers.lock().await;
+                claim_no_answer_timer_to_fire(&mut timers, &timer_call_id)
+            };
+            if !should_fire {
+                debug!(
+                    "Voicemail no-answer timer lost cancellation race for {}",
+                    timer_call_id
+                );
+                return;
+            }
+
+            info!(
+                "Voicemail no-answer timer fired for {}; cancelling ringing leg at {}",
+                timer_call_id, target_addr
+            );
+            let cancel = build_forwarded_cancel_for_target(&msg, &target_uri, max_fwd, &domain);
+            if !transport_registry.send(target_addr, cancel.clone())
+                && let Err(e) = socket.send_to(cancel.as_bytes(), target_addr).await
+            {
+                warn!(
+                    "Failed to send no-answer CANCEL for {} to {}: {}",
+                    timer_call_id, target_addr, e
+                );
+            }
+
+            dialog_stores.pending.lock().await.remove(&timer_call_id);
+            dialog_stores.active.lock().await.remove(&timer_call_id);
+            media_relay.remove_session(&timer_call_id).await;
+            webrtc_gateway.remove_session(&timer_call_id).await;
+
+            let response = match voicemail.handle_delivery_invite(&msg, src, &callee).await {
+                Ok(response) => response,
+                Err(e) => {
+                    warn!(
+                        "Failed to build no-answer voicemail response for {}: {}",
+                        timer_call_id, e
+                    );
+                    base_response(&msg, 500, "Internal Server Error").build()
+                }
+            };
+
+            if !transport_registry.send(src, response.clone())
+                && let Err(e) = socket.send_to(response.as_bytes(), src).await
+            {
+                warn!(
+                    "Failed to send no-answer voicemail response for {} to {}: {}",
+                    timer_call_id, src, e
+                );
+            }
+
+            let _ = voicemail.cancel_no_answer_timer(&timer_call_id).await;
+        });
+
+        if let Some(old) = self
+            .no_answer
+            .lock()
+            .await
+            .insert(call_id.clone(), NoAnswerTimerEntry::Ringing(handle))
+        {
+            if let NoAnswerTimerEntry::Ringing(old) = old {
+                old.abort();
+            }
+            debug!(
+                "Replaced existing voicemail no-answer timer for {}",
+                call_id
+            );
+        } else {
+            debug!("Started voicemail no-answer timer for {}", call_id);
         }
     }
 
@@ -654,6 +792,24 @@ impl Voicemail {
 
 pub fn is_voicemail_access_target(target: &str, access_extension: &str) -> bool {
     target == access_extension
+}
+
+pub fn is_message_summary_event(event: Option<&str>) -> bool {
+    event
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|token| token.trim().eq_ignore_ascii_case("message-summary"))
+}
+
+fn claim_no_answer_timer_to_fire(
+    timers: &mut HashMap<String, NoAnswerTimerEntry>,
+    call_id: &str,
+) -> bool {
+    if matches!(timers.get(call_id), Some(NoAnswerTimerEntry::Ringing(_))) {
+        timers.insert(call_id.to_string(), NoAnswerTimerEntry::Fired);
+        true
+    } else {
+        false
+    }
 }
 
 fn with_to_tag(to: &str, tag: &str) -> String {
@@ -883,6 +1039,60 @@ mod tests {
     fn access_target_requires_exact_match() {
         assert!(!is_voicemail_access_target("*970", "*97"));
         assert!(!is_voicemail_access_target(" *97", "*97"));
+    }
+
+    #[test]
+    fn message_summary_event_matches_event_token_with_parameters() {
+        assert!(is_message_summary_event(Some("message-summary")));
+        assert!(is_message_summary_event(Some("message-summary;id=1001")));
+        assert!(is_message_summary_event(Some(" MESSAGE-SUMMARY ; id=1001")));
+    }
+
+    #[test]
+    fn message_summary_event_rejects_other_events_and_empty_headers() {
+        assert!(!is_message_summary_event(None));
+        assert!(!is_message_summary_event(Some("presence")));
+        assert!(!is_message_summary_event(Some("dialog")));
+        assert!(!is_message_summary_event(Some("message-summary-extra")));
+    }
+
+    #[tokio::test]
+    async fn no_answer_timer_claim_records_fired_state_until_cleanup() {
+        let mut timers = HashMap::from([(
+            "call-123".to_string(),
+            NoAnswerTimerEntry::Ringing(tokio::spawn(async {})),
+        )]);
+
+        assert!(claim_no_answer_timer_to_fire(&mut timers, "call-123"));
+        assert!(matches!(
+            timers.get("call-123"),
+            Some(NoAnswerTimerEntry::Fired)
+        ));
+        assert!(!claim_no_answer_timer_to_fire(&mut timers, "call-123"));
+    }
+
+    #[test]
+    fn no_answer_cancel_rewrites_invite_cseq_method_to_cancel() {
+        let raw = "INVITE sip:1003@sip.air32.cn SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.2:56473;branch=z9hG4bK.NMNgTadYq;rport\r\n\
+                   Max-Forwards: 70\r\n\
+                   From: sip:1001@sip.air32.cn;tag=fromtag\r\n\
+                   To: sip:1003@sip.air32.cn\r\n\
+                   Call-ID: NO4pEKSYw-\r\n\
+                   CSeq: 20 INVITE\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
+
+        let msg = SipMessage::parse(raw).expect("parse invite");
+        let cancel = build_forwarded_cancel_for_target(
+            &msg,
+            "sip:1003@192.168.1.2:43453;transport=udp",
+            69,
+            "sip.air32.cn",
+        );
+
+        assert!(cancel.contains("CSeq: 20 CANCEL\r\n"));
+        assert!(!cancel.contains("CSeq: 20 INVITE\r\n"));
     }
 
     #[test]

@@ -16,6 +16,7 @@ use super::media::{
 };
 use super::registrar::routable_contact_uri;
 use super::transport::TransportRegistry;
+use super::voicemail::Voicemail;
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
 
@@ -72,6 +73,7 @@ pub fn build_forwarded_cancel_for_target(
     sip_domain: &str,
 ) -> String {
     let branch = proxy_via_branch(msg.call_id().unwrap_or(""));
+    let cseq = cancel_cseq_value(msg.cseq());
     let mut out = format!("CANCEL {} SIP/2.0\r\n", target_uri);
     out.push_str(&format!(
         "Via: SIP/2.0/UDP {};branch={};rport\r\n",
@@ -81,8 +83,9 @@ pub fn build_forwarded_cancel_for_target(
         out.push_str(&format!("Via: {}\r\n", via));
     }
     out.push_str(&format!("Max-Forwards: {}\r\n", max_fwd));
+    out.push_str(&format!("CSeq: {}\r\n", cseq));
     for (name, vals) in &msg.headers {
-        if name == "via" || name == "max-forwards" || name == "content-length" {
+        if name == "via" || name == "max-forwards" || name == "cseq" || name == "content-length" {
             continue;
         }
         for val in vals {
@@ -91,6 +94,14 @@ pub fn build_forwarded_cancel_for_target(
     }
     out.push_str("Content-Length: 0\r\n\r\n");
     out
+}
+
+fn cancel_cseq_value(cseq: Option<&str>) -> String {
+    let number = cseq
+        .and_then(|value| value.split_whitespace().next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("1");
+    format!("{} CANCEL", number)
 }
 
 pub fn build_forwarded_invite_for_target(
@@ -150,9 +161,11 @@ pub struct Proxy {
     active_dialogs: ActiveDialogs,
     webrtc_gateway: Arc<WebRtcGateway>,
     transport_registry: TransportRegistry,
+    voicemail: Voicemail,
 }
 
 impl Proxy {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: MySqlPool,
         cfg: Config,
@@ -161,6 +174,7 @@ impl Proxy {
         media_relay: MediaRelay,
         webrtc_gateway: Arc<WebRtcGateway>,
         transport_registry: TransportRegistry,
+        voicemail: Voicemail,
     ) -> Self {
         Self {
             pool,
@@ -171,6 +185,7 @@ impl Proxy {
             active_dialogs: dialog_stores.active,
             webrtc_gateway,
             transport_registry,
+            voicemail,
         }
     }
 
@@ -229,9 +244,21 @@ impl Proxy {
             Some(r) => r,
             None => {
                 warn!("INVITE to unregistered user: {}", callee);
+                if self
+                    .voicemail
+                    .lookup_enabled_box(&callee, &domain)
+                    .await
+                    .is_some()
+                {
+                    return self
+                        .voicemail
+                        .handle_delivery_invite(msg, src, &callee)
+                        .await;
+                }
                 return Ok(base_response(msg, 404, "Not Found").build());
             }
         };
+        let mailbox = self.voicemail.lookup_enabled_box(&callee, &domain).await;
 
         let target_addr: SocketAddr = format!("{}:{}", source_ip, source_port).parse()?;
         let caller_is_stream = self.transport_registry.contains(src);
@@ -360,6 +387,26 @@ impl Proxy {
         let target_uri = registered_target_uri(&callee, &contact_uri, target_addr);
         let forwarded = self.build_forwarded_invite(msg, &target_uri, max_fwd - 1, rewritten_body);
         self.send_sip(forwarded, target_addr).await?;
+        if let Some(mailbox) = mailbox {
+            self.voicemail
+                .start_no_answer_timer(
+                    msg.clone(),
+                    src,
+                    target_addr,
+                    target_uri.clone(),
+                    callee.clone(),
+                    mailbox.no_answer_secs,
+                    self.transport_registry.clone(),
+                    self.socket.clone(),
+                    DialogStores {
+                        pending: self.pending_dialogs.clone(),
+                        active: self.active_dialogs.clone(),
+                    },
+                    self.media_relay.clone(),
+                    self.webrtc_gateway.clone(),
+                )
+                .await;
+        }
 
         info!(
             "Proxied INVITE from {} to {} at {}",
@@ -491,6 +538,7 @@ impl Proxy {
 
     pub async fn handle_ack(&self, msg: &SipMessage, _src: SocketAddr) -> Result<()> {
         let call_id = msg.call_id().unwrap_or("").to_string();
+        self.voicemail.cancel_no_answer_timer(&call_id).await;
 
         let _ = sqlx::query(
             "UPDATE sip_calls SET status = 'answered', answered_at = NOW() WHERE call_id = ?",
@@ -539,6 +587,7 @@ impl Proxy {
 
     pub async fn handle_bye(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
         let call_id = msg.call_id().unwrap_or("").to_string();
+        self.voicemail.cancel_no_answer_timer(&call_id).await;
 
         let _ = sqlx::query(
             "UPDATE sip_calls SET status = 'ended', ended_at = NOW() WHERE call_id = ?",
@@ -601,6 +650,7 @@ impl Proxy {
 
     pub async fn handle_cancel(&self, msg: &SipMessage, _src: SocketAddr) -> Result<String> {
         let call_id = msg.call_id().unwrap_or("").to_string();
+        self.voicemail.cancel_no_answer_timer(&call_id).await;
         let domain = self.cfg.server.sip_domain.clone();
         let max_fwd = msg
             .header("max-forwards")

@@ -15,6 +15,9 @@ use super::presence::Presence;
 use super::proxy::Proxy;
 use super::registrar::Registrar;
 use super::transport::TransportRegistry;
+use super::voicemail::{NoAnswerTimerCancel, Voicemail, is_message_summary_event};
+use super::voicemail_media::VoicemailMedia;
+use super::voicemail_mwi::VoicemailMwi;
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
 use crate::security_guard::{GuardLimits, SecurityGuard};
@@ -402,6 +405,7 @@ pub struct SipHandler {
     webrtc_gateway: Arc<WebRtcGateway>,
     transport_registry: TransportRegistry,
     conference: Conference,
+    voicemail: Voicemail,
 }
 
 impl SipHandler {
@@ -430,6 +434,13 @@ impl SipHandler {
             block_secs: cfg.security.block_secs,
         })));
         let presence = Presence::new(pool.clone(), cfg.clone(), socket.clone());
+        let voicemail_media = VoicemailMedia::new(
+            cfg.server.public_ip.clone(),
+            cfg.server.voicemail_rtp_port_min,
+            cfg.server.voicemail_rtp_port_max,
+        );
+        let voicemail_mwi = VoicemailMwi::new(pool.clone(), cfg.clone(), socket.clone());
+        let voicemail = Voicemail::new(pool.clone(), cfg.clone(), voicemail_media, voicemail_mwi);
         let registrar = Registrar::new(
             pool.clone(),
             cfg.clone(),
@@ -444,6 +455,7 @@ impl SipHandler {
             media_relay.clone(),
             webrtc_gateway.clone(),
             transport_registry.clone(),
+            voicemail.clone(),
         );
         let conference_media = ConferenceMedia::new(
             cfg.server.public_ip.clone(),
@@ -463,6 +475,7 @@ impl SipHandler {
             webrtc_gateway,
             transport_registry,
             conference,
+            voicemail,
         }
     }
 
@@ -480,6 +493,10 @@ impl SipHandler {
     /// Expose the conference service for startup reconciliation tasks.
     pub fn conference(&self) -> &Conference {
         &self.conference
+    }
+
+    pub fn voicemail(&self) -> &Voicemail {
+        &self.voicemail
     }
 
     pub fn register_stream(&self, src: SocketAddr) -> tokio::sync::mpsc::UnboundedReceiver<String> {
@@ -528,8 +545,43 @@ impl SipHandler {
 
         info!("SIP {} from {}", method, src);
 
-        // Route conference traffic before generic proxy handling.
+        // Route local voicemail traffic before conference and generic proxy handling.
         let call_id_str = msg.call_id().unwrap_or("").to_string();
+        let is_vm = !call_id_str.is_empty() && self.voicemail.is_voicemail_call(&call_id_str).await;
+
+        if method == "SUBSCRIBE" && is_message_summary_event(msg.header("event")) {
+            let resp = self.voicemail.mwi().handle_subscribe(&msg, src).await;
+            return finalize_response(&msg, resp, &method);
+        }
+
+        if method == "INVITE" && self.voicemail.is_access_invite(&msg) {
+            let resp = self.voicemail.handle_access_invite(&msg, src).await;
+            return finalize_response(&msg, resp, &method);
+        }
+
+        if is_vm {
+            match method.as_str() {
+                "ACK" => {
+                    self.voicemail.handle_ack(&msg).await;
+                    return Ok(None);
+                }
+                "BYE" => {
+                    let resp = self.voicemail.handle_bye(&msg).await;
+                    return finalize_response(&msg, resp, &method);
+                }
+                "CANCEL" => {
+                    let resp = self.voicemail.handle_cancel(&msg).await;
+                    return finalize_response(&msg, resp, &method);
+                }
+                "INFO" => {
+                    let resp = self.voicemail.handle_info(&msg).await;
+                    return finalize_response(&msg, resp, &method);
+                }
+                _ => {}
+            }
+        }
+
+        // Route conference traffic before generic proxy handling.
         let is_conf =
             !call_id_str.is_empty() && self.conference.is_conference_call(&call_id_str).await;
 
@@ -614,6 +666,21 @@ impl SipHandler {
                 return;
             }
         };
+
+        if msg.status_code.is_some_and(|c| c >= 200)
+            && self.voicemail.cancel_no_answer_timer(&call_id).await
+                == NoAnswerTimerCancel::AlreadyFired
+        {
+            self.pending_dialogs.lock().await.remove(&call_id);
+            self.active_dialogs.lock().await.remove(&call_id);
+            self.media_relay.remove_session(&call_id).await;
+            self.webrtc_gateway.remove_session(&call_id).await;
+            debug!(
+                "Dropping final response for {} because no-answer voicemail already won",
+                call_id
+            );
+            return;
+        }
 
         let caller_addr = {
             let dialogs = self.pending_dialogs.lock().await;
