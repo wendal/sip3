@@ -40,6 +40,11 @@ impl VoicemailMwi {
         let subscriber_tag = extract_param(from, "tag").unwrap_or_default();
         let expires = msg.expires().unwrap_or(3600);
 
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            subscriber, self.cfg.server.public_ip, self.cfg.server.sip_port
+        );
+
         if expires == 0 {
             sqlx::query(
                 "DELETE FROM sip_voicemail_mwi_subscriptions WHERE subscriber = ? AND domain = ? AND call_id = ?",
@@ -49,7 +54,10 @@ impl VoicemailMwi {
             .bind(&call_id)
             .execute(&self.pool)
             .await?;
-            return Ok(base_response(msg, 200, "OK").build());
+            return Ok(base_response(msg, 200, "OK")
+                .header("Contact", &contact)
+                .header("Expires", "0")
+                .build());
         }
 
         let expires_at = (Utc::now() + chrono::Duration::seconds(i64::from(expires))).naive_utc();
@@ -74,8 +82,19 @@ impl VoicemailMwi {
         .execute(&self.pool)
         .await?;
 
-        self.notify_mailbox(&subscriber, &domain).await?;
-        Ok(base_response(msg, 200, "OK").build())
+        let mwi = self.clone();
+        let sub = subscriber.to_string();
+        let dom = domain.clone();
+        tokio::spawn(async move {
+            if let Err(e) = mwi.notify_mailbox(&sub, &dom).await {
+                warn!("Failed to send initial MWI NOTIFY to {}: {}", sub, e);
+            }
+        });
+
+        Ok(base_response(msg, 200, "OK")
+            .header("Contact", &contact)
+            .header("Expires", &expires.to_string())
+            .build())
     }
 
     pub async fn notify_mailbox(&self, username: &str, domain: &str) -> Result<()> {
@@ -91,13 +110,30 @@ impl VoicemailMwi {
         .await?;
 
         for (call_id, tag, ip, port, cseq) in rows {
-            let notify = build_notify(username, domain, &call_id, &tag, cseq + 1, new_count, saved_count);
+            let next_cseq = cseq + 1;
+            let notify = build_notify(username, domain, &call_id, &tag, next_cseq, new_count, saved_count);
             let addr: SocketAddr = format!("{}:{}", ip, port).parse()?;
+            
+            // Send NOTIFY. Response processing (200 OK acknowledgment, 481 removal) is
+            // handled when MWI is wired into SipHandler transaction routing (Task 8).
             if let Err(e) = self.socket.send_to(notify.as_bytes(), addr).await {
                 warn!("Failed to send voicemail MWI NOTIFY to {}: {}", addr, e);
-            } else {
-                info!("Sent voicemail MWI NOTIFY to {}", addr);
+                continue;
             }
+            
+            info!("Sent voicemail MWI NOTIFY to {} (CSeq {})", addr, next_cseq);
+            
+            // Persist the CSeq increment after successful send
+            sqlx::query(
+                "UPDATE sip_voicemail_mwi_subscriptions SET cseq = ? 
+                 WHERE subscriber = ? AND domain = ? AND call_id = ?",
+            )
+            .bind(next_cseq)
+            .bind(username)
+            .bind(domain)
+            .bind(&call_id)
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }
@@ -138,14 +174,19 @@ fn build_notify(
     saved_count: i64,
 ) -> String {
     let body = build_message_summary_body(username, domain, new_count, saved_count);
+    let call_id_short = call_id.chars().take(8).collect::<String>();
+    let from_tag = format!("sip3-mwi-{}", call_id_short);
+    let branch = format!("z9hG4bK-vm-{}-{}", call_id_short, cseq);
+    
     format!(
-        "NOTIFY sip:{}@{} SIP/2.0\r\nVia: SIP/2.0/UDP {};branch=z9hG4bK-vm-{}\r\nFrom: <sip:{}@{}>;tag=sip3-mwi\r\nTo: <sip:{}@{}>;tag={}\r\nCall-ID: {}\r\nCSeq: {} NOTIFY\r\nEvent: message-summary\r\nSubscription-State: active\r\nContent-Type: application/simple-message-summary\r\nContent-Length: {}\r\n\r\n{}",
+        "NOTIFY sip:{}@{} SIP/2.0\r\nVia: SIP/2.0/UDP {};branch={}\r\nMax-Forwards: 70\r\nFrom: <sip:{}@{}>;tag={}\r\nTo: <sip:{}@{}>;tag={}\r\nCall-ID: {}\r\nCSeq: {} NOTIFY\r\nEvent: message-summary\r\nSubscription-State: active\r\nContent-Type: application/simple-message-summary\r\nContent-Length: {}\r\n\r\n{}",
         username,
         domain,
         domain,
-        cseq,
+        branch,
         username,
         domain,
+        from_tag,
         username,
         domain,
         subscriber_tag,
@@ -182,5 +223,57 @@ mod tests {
         let body = build_message_summary_body("1001", "sip.air32.cn", 0, 0);
         assert!(body.contains("Messages-Waiting: no"));
         assert!(body.contains("Voice-Message: 0/0 (0/0)"));
+    }
+
+    #[test]
+    fn notify_includes_required_headers_and_correct_content_length() {
+        let notify = build_notify("1001", "sip.air32.cn", "test-call-123", "user-tag", 5, 2, 1);
+        
+        assert!(notify.contains("Max-Forwards: 70"));
+        assert!(notify.contains("Event: message-summary"));
+        assert!(notify.contains("Subscription-State: active"));
+        assert!(notify.contains("Content-Type: application/simple-message-summary"));
+        
+        let body = build_message_summary_body("1001", "sip.air32.cn", 2, 1);
+        let expected_length = format!("Content-Length: {}", body.len());
+        assert!(notify.contains(&expected_length));
+        
+        assert!(notify.contains("branch=z9hG4bK-vm-"));
+        assert!(notify.contains("-5"));
+    }
+
+    #[test]
+    fn notify_produces_unique_branches_for_different_call_ids() {
+        let notify1 = build_notify("1001", "sip.air32.cn", "call-aaa", "tag1", 3, 0, 0);
+        let notify2 = build_notify("1001", "sip.air32.cn", "call-bbb", "tag2", 3, 0, 0);
+        
+        let branch1 = extract_header_value(&notify1, "Via").unwrap();
+        let branch2 = extract_header_value(&notify2, "Via").unwrap();
+        
+        assert_ne!(branch1, branch2, "Branches should differ for different call-IDs");
+        assert!(branch1.contains("call-aaa"));
+        assert!(branch2.contains("call-bbb"));
+    }
+
+    #[test]
+    fn notify_produces_unique_from_tags_for_different_call_ids() {
+        let notify1 = build_notify("1001", "sip.air32.cn", "call-aaa", "tag1", 1, 0, 0);
+        let notify2 = build_notify("1001", "sip.air32.cn", "call-bbb", "tag2", 1, 0, 0);
+        
+        let from1 = extract_header_value(&notify1, "From").unwrap();
+        let from2 = extract_header_value(&notify2, "From").unwrap();
+        
+        assert_ne!(from1, from2, "From tags should differ for different call-IDs");
+        assert!(from1.contains("sip3-mwi-call-aaa"));
+        assert!(from2.contains("sip3-mwi-call-bbb"));
+    }
+
+    fn extract_header_value(msg: &str, header: &str) -> Option<String> {
+        for line in msg.lines() {
+            if line.to_lowercase().starts_with(&header.to_lowercase()) {
+                return Some(line.to_string());
+            }
+        }
+        None
     }
 }
