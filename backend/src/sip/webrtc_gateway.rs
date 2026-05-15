@@ -7,25 +7,26 @@
 //! SIP phone ─► sip_socket ──► local_track ──► RTCPeerConnection ─(DTLS-SRTP)─► Browser
 //! ```
 
-use anyhow::{anyhow, Result};
+use super::media::make_plain_rtp_sdp;
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_PCMA, MIME_TYPE_PCMU};
-use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
+use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::api::media_engine::{MIME_TYPE_PCMA, MIME_TYPE_PCMU, MediaEngine};
+use webrtc::api::setting_engine::SettingEngine;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::interceptor::registry::Registry;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
@@ -33,12 +34,21 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::util::marshal::Marshal;
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum BridgeFlow {
+    /// Browser originated INVITE (WebRTC offer -> SIP answer).
+    BrowserCaller,
+    /// SIP phone originated INVITE (SIP offer -> browser WebRTC answer).
+    SipCaller,
+}
+
 /// Per-call WebRTC session state.
 struct WebRtcSession {
     pc: Arc<RTCPeerConnection>,
+    flow: BridgeFlow,
     /// The SIP phone's RTP address (set from 200 OK SDP or learned from first packet).
     sip_peer: Arc<Mutex<Option<SocketAddr>>>,
-    /// Complete WebRTC answer SDP (with ICE candidates) to return in 200 OK.
+    /// SDP to send back to the original SIP transaction caller in 200 OK.
     answer_sdp: String,
     created_at: Instant,
     /// Background task forwarding SIP phone RTP → local track → browser.
@@ -81,6 +91,88 @@ impl WebRtcGateway {
         call_id: String,
         browser_offer_sdp: &str,
     ) -> Result<(String, u16)> {
+        let (pc, sip_peer, sip_rx_task, sip_rtp_port) = self.prepare_session(&call_id).await?;
+
+        // --- SDP negotiation (browser offer -> gateway answer) ---
+        let offer = RTCSessionDescription::offer(browser_offer_sdp.to_owned())?;
+        pc.set_remote_description(offer).await?;
+
+        let answer = pc.create_answer(None).await?;
+        pc.set_local_description(answer).await?;
+
+        // Give ICE host candidate gathering a brief moment to complete.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        let local_desc = pc
+            .local_description()
+            .await
+            .ok_or_else(|| anyhow!("No local description after ICE gathering"))?;
+        let answer_sdp = local_desc.sdp.clone();
+
+        let session = WebRtcSession {
+            pc,
+            flow: BridgeFlow::BrowserCaller,
+            sip_peer,
+            answer_sdp: answer_sdp.clone(),
+            created_at: Instant::now(),
+            sip_rx_task,
+        };
+        self.sessions.lock().await.insert(call_id.clone(), session);
+        info!(
+            "WebRTC session created for {}: sip_port={}",
+            call_id, sip_rtp_port
+        );
+        Ok((answer_sdp, sip_rtp_port))
+    }
+
+    /// Create a WebRTC session for a SIP-phone-originated INVITE where the
+    /// callee is a browser over WS/WSS.
+    ///
+    /// Returns `(webrtc_offer_sdp, sip_rtp_port)`:
+    /// - `webrtc_offer_sdp`: offer to forward to browser callee
+    /// - `sip_rtp_port`: gateway RTP port used in SIP-side 200 answer
+    pub async fn create_session_for_sip_caller(&self, call_id: String) -> Result<(String, u16)> {
+        let (pc, sip_peer, sip_rx_task, sip_rtp_port) = self.prepare_session(&call_id).await?;
+
+        // --- SDP negotiation (gateway offer -> browser answer later) ---
+        let offer = pc.create_offer(None).await?;
+        pc.set_local_description(offer).await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let local_desc = pc
+            .local_description()
+            .await
+            .ok_or_else(|| anyhow!("No local description after ICE gathering"))?;
+        let webrtc_offer_sdp = local_desc.sdp.clone();
+
+        // SIP caller should receive a plain RTP answer from gateway.
+        let sip_answer_sdp = make_plain_rtp_sdp(&self.public_ip, sip_rtp_port);
+
+        let session = WebRtcSession {
+            pc,
+            flow: BridgeFlow::SipCaller,
+            sip_peer,
+            answer_sdp: sip_answer_sdp.clone(),
+            created_at: Instant::now(),
+            sip_rx_task,
+        };
+        self.sessions.lock().await.insert(call_id.clone(), session);
+        info!(
+            "Reverse WebRTC session created for {}: sip_port={}",
+            call_id, sip_rtp_port
+        );
+        Ok((webrtc_offer_sdp, sip_rtp_port))
+    }
+
+    async fn prepare_session(
+        &self,
+        call_id: &str,
+    ) -> Result<(
+        Arc<RTCPeerConnection>,
+        Arc<Mutex<Option<SocketAddr>>>,
+        JoinHandle<()>,
+        u16,
+    )> {
         // --- MediaEngine: PCMU + PCMA only (no transcoding needed) ---
         let mut m = MediaEngine::default();
         m.register_codec(
@@ -163,29 +255,13 @@ impl WebRtcGateway {
                     // Marshal the decoded RTP packet back to raw bytes.
                     if let Ok(raw) = packet.marshal()
                         && !raw.is_empty()
-                            && let Some(addr) = *peer.lock().await {
-                                let _ = socket.send_to(&raw, addr).await;
-                            }
+                        && let Some(addr) = *peer.lock().await
+                    {
+                        let _ = socket.send_to(&raw, addr).await;
+                    }
                 }
             })
         }));
-
-        // --- SDP negotiation ---
-        let offer = RTCSessionDescription::offer(browser_offer_sdp.to_owned())?;
-        pc.set_remote_description(offer).await?;
-
-        let answer = pc.create_answer(None).await?;
-        pc.set_local_description(answer).await?;
-
-        // Give ICE host candidate gathering a brief moment to complete.
-        // Host candidates (used with NAT 1:1 mapping) are gathered nearly instantly.
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-
-        let local_desc = pc
-            .local_description()
-            .await
-            .ok_or_else(|| anyhow!("No local description after ICE gathering"))?;
-        let answer_sdp = local_desc.sdp.clone();
 
         // --- Background task: SIP phone → browser via local_track ---
         let sip_socket_tx = sip_socket;
@@ -196,9 +272,10 @@ impl WebRtcGateway {
             loop {
                 match sip_socket_tx.recv_from(&mut buf).await {
                     Ok((n, src)) => {
-                        // Learn SIP peer address from first packet (symmetric RTP fallback).
+                        // Learn SIP peer address from received packets (symmetric RTP).
+                        // Update on change so stale SDP-derived addresses don't pin routing.
                         let mut peer = sip_peer_tx.lock().await;
-                        if peer.is_none() {
+                        if peer.map(|p| p != src).unwrap_or(true) {
                             *peer = Some(src);
                         }
                         drop(peer);
@@ -214,28 +291,43 @@ impl WebRtcGateway {
             }
         });
 
-        let session = WebRtcSession {
-            pc,
-            sip_peer,
-            answer_sdp: answer_sdp.clone(),
-            created_at: Instant::now(),
-            sip_rx_task,
-        };
-        self.sessions.lock().await.insert(call_id.clone(), session);
-        info!(
-            "WebRTC session created for {}: sip_port={}",
-            call_id, sip_rtp_port
-        );
-        Ok((answer_sdp, sip_rtp_port))
+        Ok((pc, sip_peer, sip_rx_task, sip_rtp_port))
     }
 
     /// Set the SIP phone's RTP address for the call (from 200 OK SDP).
     pub async fn set_sip_peer(&self, call_id: &str, addr: SocketAddr) {
-        let sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get(call_id) {
-            *session.sip_peer.lock().await = Some(addr);
+        let sip_peer = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(call_id).map(|s| s.sip_peer.clone())
+        };
+        if let Some(peer) = sip_peer {
+            *peer.lock().await = Some(addr);
             info!("WebRTC gw: SIP peer for {} set to {}", call_id, addr);
         }
+    }
+
+    pub async fn is_sip_caller_session(&self, call_id: &str) -> bool {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(call_id)
+            .map(|s| s.flow == BridgeFlow::SipCaller)
+            .unwrap_or(false)
+    }
+
+    /// For SIP-originated calls, apply browser's 200 OK SDP as remote answer.
+    pub async fn apply_callee_answer(&self, call_id: &str, callee_answer_sdp: &str) -> Result<()> {
+        let (pc, flow) = {
+            let sessions = self.sessions.lock().await;
+            match sessions.get(call_id) {
+                Some(s) => (s.pc.clone(), s.flow),
+                None => return Ok(()),
+            }
+        };
+        if flow == BridgeFlow::SipCaller {
+            let answer = RTCSessionDescription::answer(callee_answer_sdp.to_owned())?;
+            pc.set_remote_description(answer).await?;
+        }
+        Ok(())
     }
 
     /// Return the stored WebRTC answer SDP, or `None` if no WebRTC session exists.

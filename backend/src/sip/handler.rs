@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use sqlx::MySqlPool;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
 use super::media::{
-    is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp, sdp_rtp_addr, MediaRelay,
+    MediaRelay, is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp, sdp_rtp_addr,
 };
 use super::presence::Presence;
 use super::proxy::Proxy;
@@ -89,10 +89,11 @@ impl SipMessage {
                 if line.starts_with(' ') || line.starts_with('\t') {
                     if let Some(key) = &last_key
                         && let Some(vals) = headers.get_mut(key)
-                            && let Some(last) = vals.last_mut() {
-                                last.push(' ');
-                                last.push_str(line.trim());
-                            }
+                        && let Some(last) = vals.last_mut()
+                    {
+                        last.push(' ');
+                        last.push_str(line.trim());
+                    }
                 } else if let Some(colon_pos) = line.find(':') {
                     let name = normalize_header_name(&line[..colon_pos]);
                     let value = line[colon_pos + 1..].trim().to_string();
@@ -236,9 +237,10 @@ pub fn base_response(req: &SipMessage, status_code: u16, reason: &str) -> SipRes
 /// Extract URI from a SIP address like "Name" <sip:user@host> or sip:user@host
 pub fn extract_uri(addr: &str) -> Option<String> {
     if let Some(start) = addr.find('<')
-        && let Some(end_rel) = addr[start..].find('>') {
-            return Some(addr[start + 1..start + end_rel].trim().to_string());
-        }
+        && let Some(end_rel) = addr[start..].find('>')
+    {
+        return Some(addr[start + 1..start + end_rel].trim().to_string());
+    }
     let uri = addr.split(';').next().unwrap_or(addr).trim();
     if uri.starts_with("sip:") || uri.starts_with("sips:") || uri.starts_with("tel:") {
         Some(uri.to_string())
@@ -560,8 +562,19 @@ impl SipHandler {
             // Otherwise rewrite the body so the caller sends RTP to our relay_b port.
             let relayed = if is_invite_200_ok_with_sdp(msg) && !stream_to_stream {
                 if let Some(answer_sdp) = self.webrtc_gateway.get_answer_sdp(&call_id).await {
-                    // WebRTC call: set SIP phone's RTP address, return our WebRTC answer.
-                    if let Some(sip_rtp_addr) = sdp_rtp_addr(&msg.body) {
+                    if self.webrtc_gateway.is_sip_caller_session(&call_id).await {
+                        if let Err(e) = self
+                            .webrtc_gateway
+                            .apply_callee_answer(&call_id, &msg.body)
+                            .await
+                        {
+                            warn!(
+                                "WebRTC gw: failed to apply callee answer for {}: {}",
+                                call_id, e
+                            );
+                        }
+                    } else if let Some(sip_rtp_addr) = sdp_rtp_addr(&msg.body) {
+                        // Browser-originated call: learn SIP RTP peer from 200 OK.
                         self.webrtc_gateway
                             .set_sip_peer(&call_id, sip_rtp_addr)
                             .await;
