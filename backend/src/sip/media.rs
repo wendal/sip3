@@ -88,9 +88,10 @@ impl MediaRelay {
         //   • Forward to caller's learned address on relay_b.
         let callee_rtp_a = callee_rtp.clone();
         let caller_rtp_a = caller_rtp.clone();
-        let sock_a_task = sock_a.clone();
+        let recv_a = sock_a.clone();
+        let send_b = sock_b.clone();
         let task_a = tokio::spawn(async move {
-            run_relay_loop(sock_a_task, callee_rtp_a, caller_rtp_a).await;
+            run_relay_loop(recv_a, send_b, callee_rtp_a, caller_rtp_a).await;
         });
 
         // relay_b: caller sends here → forward to callee.
@@ -98,9 +99,10 @@ impl MediaRelay {
         //   • Forward to callee's learned address on relay_a.
         let callee_rtp_b = callee_rtp.clone();
         let caller_rtp_b = caller_rtp.clone();
-        let sock_b_task = sock_b.clone();
+        let recv_b = sock_b.clone();
+        let send_a = sock_a.clone();
         let task_b = tokio::spawn(async move {
-            run_relay_loop(sock_b_task, caller_rtp_b, callee_rtp_b).await;
+            run_relay_loop(recv_b, send_a, caller_rtp_b, callee_rtp_b).await;
         });
 
         let session = MediaSession {
@@ -184,6 +186,7 @@ impl MediaRelay {
 /// and forward to whatever address is stored in `peer_addr`.
 async fn run_relay_loop(
     recv_socket: Arc<UdpSocket>,
+    send_socket: Arc<UdpSocket>,
     own_addr: Arc<Mutex<Option<SocketAddr>>>,
     peer_addr: Arc<Mutex<Option<SocketAddr>>>,
 ) {
@@ -205,7 +208,7 @@ async fn run_relay_loop(
 
         // Forward to the peer if its address is known.
         if let Some(dst) = *peer_addr.lock().await
-            && let Err(e) = recv_socket.send_to(&buf[..len], dst).await {
+            && let Err(e) = send_socket.send_to(&buf[..len], dst).await {
                 warn!("RTP relay forward error to {}: {}", dst, e);
             }
     }

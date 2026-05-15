@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use super::handler::{
     ActiveDialogs, DialogInfo, DialogStores, PendingDialogs, SipMessage, base_response,
-    extract_uri, uri_username,
+    extract_uri, md5_hex, uri_username,
 };
 use super::media::{MediaRelay, is_webrtc_sdp, make_plain_rtp_sdp, rewrite_sdp, sdp_rtp_addr};
 use super::transport::TransportRegistry;
@@ -33,6 +33,52 @@ pub fn should_preserve_webrtc_sdp_for_target(contact_uri: &str, body: &str) -> b
 
 pub fn should_bridge_plain_sip_to_websocket_target(contact_uri: &str, body: &str) -> bool {
     is_websocket_contact_uri(contact_uri) && !body.is_empty() && !is_webrtc_sdp(body)
+}
+
+pub fn should_refresh_registration_source(
+    registered_ip: &str,
+    registered_port: u16,
+    src: SocketAddr,
+) -> bool {
+    registered_ip
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip == src.ip())
+        .unwrap_or(false)
+        && registered_port != src.port()
+}
+
+fn proxy_via_branch(call_id: &str) -> String {
+    let digest = md5_hex(call_id);
+    let suffix = &digest[..digest.len().min(16)];
+    format!("z9hG4bKproxy{}", suffix)
+}
+
+pub fn build_forwarded_cancel_for_target(
+    msg: &SipMessage,
+    target_uri: &str,
+    max_fwd: u32,
+    sip_domain: &str,
+) -> String {
+    let branch = proxy_via_branch(msg.call_id().unwrap_or(""));
+    let mut out = format!("CANCEL {} SIP/2.0\r\n", target_uri);
+    out.push_str(&format!(
+        "Via: SIP/2.0/UDP {};branch={}\r\n",
+        sip_domain, branch
+    ));
+    for via in msg.via_headers() {
+        out.push_str(&format!("Via: {}\r\n", via));
+    }
+    out.push_str(&format!("Max-Forwards: {}\r\n", max_fwd));
+    for (name, vals) in &msg.headers {
+        if name == "via" || name == "max-forwards" || name == "content-length" {
+            continue;
+        }
+        for val in vals {
+            out.push_str(&format!("{}: {}\r\n", capitalize_header(name), val));
+        }
+    }
+    out.push_str("Content-Length: 0\r\n\r\n");
+    out
 }
 
 #[derive(Clone)]
@@ -108,6 +154,9 @@ impl Proxy {
                 warn!("INVITE from unrecognised caller: {}@{}", caller, domain);
                 return Ok(base_response(msg, 403, "Forbidden").build());
             }
+
+            self.refresh_sender_registration_source(&caller, &domain, src)
+                .await?;
         }
 
         // Look up callee's registration
@@ -256,6 +305,50 @@ impl Proxy {
         Ok(())
     }
 
+    async fn refresh_sender_registration_source(
+        &self,
+        username: &str,
+        domain: &str,
+        src: SocketAddr,
+    ) -> Result<()> {
+        let row: Option<(String, u16)> = sqlx::query_as(
+            "SELECT source_ip, source_port FROM sip_registrations
+             WHERE username = ? AND domain = ? AND expires_at > NOW()",
+        )
+        .bind(username)
+        .bind(domain)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some((registered_ip, registered_port)) = row
+            && should_refresh_registration_source(&registered_ip, registered_port, src)
+        {
+            sqlx::query(
+                "UPDATE sip_registrations
+                 SET source_port = ?
+                 WHERE username = ? AND domain = ? AND source_ip = ? AND expires_at > NOW()",
+            )
+            .bind(src.port())
+            .bind(username)
+            .bind(domain)
+            .bind(&registered_ip)
+            .execute(&self.pool)
+            .await?;
+
+            info!(
+                "Refreshed registration source port for {}@{}: {}:{} -> {}:{}",
+                username,
+                domain,
+                registered_ip,
+                registered_port,
+                registered_ip,
+                src.port()
+            );
+        }
+
+        Ok(())
+    }
+
     async fn lookup_registered_target(&self, username: &str, domain: &str) -> Option<SocketAddr> {
         let row: Option<(String, u16)> = sqlx::query_as(
             "SELECT source_ip, source_port FROM sip_registrations
@@ -316,7 +409,7 @@ impl Proxy {
         max_fwd: u32,
         rewritten_body: Option<String>,
     ) -> String {
-        let branch = format!("z9hG4bKproxy{}", rand_token());
+        let branch = proxy_via_branch(msg.call_id().unwrap_or(""));
         let mut out = format!("INVITE {} SIP/2.0\r\n", contact_uri);
 
         out.push_str(&format!(
@@ -468,6 +561,11 @@ impl Proxy {
 
     pub async fn handle_cancel(&self, msg: &SipMessage, _src: SocketAddr) -> Result<String> {
         let call_id = msg.call_id().unwrap_or("").to_string();
+        let domain = self.cfg.server.sip_domain.clone();
+        let max_fwd = msg
+            .header("max-forwards")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(70);
 
         let _ = sqlx::query(
             "UPDATE sip_calls SET status = 'cancelled', ended_at = NOW() WHERE call_id = ?",
@@ -483,7 +581,26 @@ impl Proxy {
         };
 
         if let Some(target) = callee_addr {
-            let _ = self.send_sip(msg.raw.clone(), target).await;
+            let target_ip = target.ip().to_string();
+            let target_port = target.port();
+            let target_uri = sqlx::query_as::<_, (String,)>(
+                "SELECT contact_uri FROM sip_registrations
+                 WHERE source_ip = ? AND source_port = ? AND expires_at > NOW()
+                 LIMIT 1",
+            )
+            .bind(&target_ip)
+            .bind(target_port)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|(uri,)| uri)
+            .or_else(|| msg.request_uri.clone())
+            .unwrap_or_else(|| format!("sip:{}@{}", uri_username(msg.request_uri.as_deref().unwrap_or("")).unwrap_or_default(), domain));
+
+            let forwarded =
+                build_forwarded_cancel_for_target(msg, &target_uri, max_fwd.saturating_sub(1), &domain);
+            let _ = self.send_sip(forwarded, target).await;
             info!("Forwarded CANCEL for call {} to {}", call_id, target);
         } else {
             warn!("No dialog found to forward CANCEL for call_id: {}", call_id);
@@ -603,6 +720,8 @@ impl Proxy {
             warn!("MESSAGE from unrecognised sender: {}@{}", sender, domain);
             return Ok(base_response(msg, 403, "Forbidden").build());
         }
+        self.refresh_sender_registration_source(&sender, &domain, src)
+            .await?;
 
         let fallback_callee = msg
             .to_header()
@@ -667,12 +786,6 @@ impl Proxy {
             Ok(base_response(msg, 404, "Not Found").build())
         }
     }
-}
-
-fn rand_token() -> String {
-    use rand::Rng;
-    let n: u64 = rand::rng().random();
-    format!("{:x}", n)
 }
 
 fn capitalize_header(name: &str) -> String {

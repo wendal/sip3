@@ -9,13 +9,15 @@ mod tests {
         SIP_ALLOW_METHODS, SipMessage, extract_uri, md5_hex, normalize_header_name,
         parse_auth_params, strip_proxy_via, uri_username,
     };
-    use sip3_backend::sip::media::{rewrite_sdp, sdp_audio_port, sdp_has_crypto};
+    use sip3_backend::sip::media::{MediaRelay, rewrite_sdp, sdp_audio_port, sdp_has_crypto};
     use sip3_backend::sip::proxy::{
         CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL,
+        build_forwarded_cancel_for_target, should_refresh_registration_source,
         should_bridge_plain_sip_to_websocket_target, should_preserve_webrtc_sdp_for_target,
     };
     use sip3_backend::sip::registrar::{ACCOUNT_LOOKUP_SQL, generate_nonce, validate_nonce};
     use sip3_backend::sip::transport::TransportRegistry;
+    use std::time::Duration;
 
     // ── SipMessage::parse ────────────────────────────────────────────────────
 
@@ -313,6 +315,149 @@ mod tests {
             "sip:1001@192.0.2.10:5060",
             plain_sdp
         ));
+    }
+
+    #[test]
+    fn test_should_refresh_registration_source_when_ip_matches_and_port_changes() {
+        let src = "119.130.132.117:62505".parse().expect("socket addr");
+        assert!(should_refresh_registration_source(
+            "119.130.132.117",
+            64346,
+            src
+        ));
+    }
+
+    #[test]
+    fn test_should_not_refresh_registration_source_when_ip_differs() {
+        let src = "119.130.132.117:62505".parse().expect("socket addr");
+        assert!(!should_refresh_registration_source(
+            "203.0.113.10",
+            64346,
+            src
+        ));
+    }
+
+    #[test]
+    fn test_should_not_refresh_registration_source_when_port_unchanged() {
+        let src = "119.130.132.117:64346".parse().expect("socket addr");
+        assert!(!should_refresh_registration_source(
+            "119.130.132.117",
+            64346,
+            src
+        ));
+    }
+
+    #[test]
+    fn test_forwarded_cancel_targets_callee_contact_and_proxy_branch() {
+        let raw = "CANCEL sip:1003@sip.air32.cn SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.2:56473;branch=z9hG4bK.NMNgTadYq;rport\r\n\
+                   Max-Forwards: 70\r\n\
+                   From: <sip:1001@sip.air32.cn>;tag=oP6liqShM\r\n\
+                   To: sip:1003@sip.air32.cn\r\n\
+                   Call-ID: NO4pEKSYw-\r\n\
+                   CSeq: 20 CANCEL\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
+
+        let msg = SipMessage::parse(raw).expect("parse cancel");
+        let forwarded = build_forwarded_cancel_for_target(
+            &msg,
+            "sip:1003@192.168.1.2:43453;transport=udp",
+            69,
+            "sip.air32.cn",
+        );
+
+        assert!(
+            forwarded.starts_with("CANCEL sip:1003@192.168.1.2:43453;transport=udp SIP/2.0\r\n")
+        );
+        assert!(forwarded.contains("Via: SIP/2.0/UDP sip.air32.cn;branch=z9hG4bKproxy"));
+        assert!(
+            forwarded.contains(
+                "Via: SIP/2.0/UDP 192.168.1.2:56473;branch=z9hG4bK.NMNgTadYq;rport"
+            )
+        );
+        assert!(forwarded.contains("Max-Forwards: 69"));
+        assert!(forwarded.ends_with("\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn test_media_relay_sends_from_signaled_ports() {
+        let relay = MediaRelay::new("127.0.0.1".to_string(), 31000, 31100);
+        let call_id = format!("test-call-{}", std::process::id());
+        let (relay_a, relay_b) = relay
+            .allocate_session(call_id.clone())
+            .await
+            .expect("allocate relay session");
+
+        let caller = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind caller");
+        let callee = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind callee");
+
+        caller
+            .send_to(b"learn-caller", ("127.0.0.1", relay_b))
+            .await
+            .expect("caller learn send");
+        let mut caller_buf = [0u8; 256];
+        let (caller_len, caller_src) = {
+            let mut received = None;
+            for _ in 0..10 {
+                callee
+                    .send_to(b"to-caller", ("127.0.0.1", relay_a))
+                    .await
+                    .expect("callee send");
+                if let Ok(Ok(pair)) = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    caller.recv_from(&mut caller_buf),
+                )
+                .await
+                {
+                    received = Some(pair);
+                    break;
+                }
+            }
+            received.expect("caller receive timeout")
+        };
+        assert_eq!(&caller_buf[..caller_len], b"to-caller");
+        assert_eq!(
+            caller_src.port(),
+            relay_b,
+            "caller must receive from relay_b announced in 200 OK SDP"
+        );
+
+        let mut callee_buf = [0u8; 256];
+        let (callee_len, callee_src) = {
+            let mut received = None;
+            for _ in 0..20 {
+                caller
+                    .send_to(b"to-callee", ("127.0.0.1", relay_b))
+                    .await
+                    .expect("caller send");
+                if let Ok(Ok(pair)) = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    callee.recv_from(&mut callee_buf),
+                )
+                .await
+                {
+                    let (len, src) = pair;
+                    if &callee_buf[..len] == b"to-callee" {
+                        received = Some((len, src));
+                        break;
+                    }
+                }
+            }
+            received.expect("callee receive timeout")
+        };
+        assert_eq!(&callee_buf[..callee_len], b"to-callee");
+        assert_eq!(
+            callee_src.port(),
+            relay_a,
+            "callee must receive from relay_a announced in INVITE SDP"
+        );
+
+        relay.remove_session(&call_id).await;
     }
 
     #[test]
