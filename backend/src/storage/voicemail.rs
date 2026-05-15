@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
-use tokio::fs;
+use tokio::{fs, io::AsyncWriteExt};
+use uuid::Uuid;
 
 const MAX_WAV_SAMPLES: usize = 10_000_000;
 
@@ -35,15 +36,30 @@ impl LocalVoicemailStorage {
     ) -> Result<String> {
         let mailbox = sanitize_key_part(mailbox);
         let call_id = sanitize_key_part(call_id);
-        let key = format!("{}/{}.wav", mailbox, call_id);
-        let path = self.path_for_key(&key)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+        let dir = self.path_for_key(&mailbox)?;
+        fs::create_dir_all(&dir).await?;
+
+        for _ in 0..8 {
+            let key = format!("{}/{}-{}.wav", mailbox, call_id, Uuid::new_v4().simple());
+            let path = self.path_for_key(&key)?;
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .await
+            {
+                Ok(mut file) => {
+                    file.write_all(bytes)
+                        .await
+                        .with_context(|| format!("write voicemail {:?}", path))?;
+                    return Ok(key);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e).with_context(|| format!("create voicemail {:?}", path)),
+            }
         }
-        fs::write(&path, bytes)
-            .await
-            .with_context(|| format!("write voicemail {:?}", path))?;
-        Ok(key)
+
+        Err(anyhow!("failed to allocate unique voicemail storage key"))
     }
 
     pub async fn read(&self, key: &str) -> Result<Vec<u8>> {
@@ -327,6 +343,34 @@ mod tests {
         assert_eq!(storage.read(&key).await.expect("read"), b"hello");
         storage.delete(&key).await.expect("delete");
         assert!(!root.join(&key).exists());
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn local_storage_does_not_overwrite_same_call_id_messages() {
+        let root =
+            std::env::temp_dir().join(format!("sip3-vm-collision-test-{}", rand::random::<u64>()));
+        let storage = LocalVoicemailStorage::new(root.clone());
+
+        let first_key = storage
+            .write_message("1001", "duplicate-call", b"first")
+            .await
+            .expect("first write");
+        let second_key = storage
+            .write_message("1001", "duplicate-call", b"second")
+            .await
+            .expect("second write");
+
+        assert_ne!(first_key, second_key);
+        assert_eq!(
+            storage.read(&first_key).await.expect("first read"),
+            b"first"
+        );
+        assert_eq!(
+            storage.read(&second_key).await.expect("second read"),
+            b"second"
+        );
+
         let _ = fs::remove_dir_all(root).await;
     }
 }

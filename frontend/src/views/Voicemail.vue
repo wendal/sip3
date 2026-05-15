@@ -114,7 +114,7 @@
           <el-input-number v-model="form.no_answer_secs" :min="1" :max="600" />
         </el-form-item>
         <el-form-item label="最长留言秒数">
-          <el-input-number v-model="form.max_message_secs" :min="1" :max="3600" />
+          <el-input-number v-model="form.max_message_secs" :min="1" :max="1250" />
         </el-form-item>
         <el-form-item label="容量上限">
           <el-input-number v-model="form.max_messages" :min="1" :max="10000" />
@@ -318,7 +318,7 @@ const validateForm = () => {
   }
   const checks = [
     ['no_answer_secs', '无应答秒数', 1, 600],
-    ['max_message_secs', '最长留言秒数', 1, 3600],
+    ['max_message_secs', '最长留言秒数', 1, 1250],
     ['max_messages', '容量上限', 1, 10000],
   ]
   for (const [key, label, min, max] of checks) {

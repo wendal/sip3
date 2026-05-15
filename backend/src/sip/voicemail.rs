@@ -22,7 +22,7 @@ use super::transport::TransportRegistry;
 use super::voicemail_media::{
     VoicemailDtmf, VoicemailMedia, parse_dtmf_relay, play_wav, record_to_storage,
 };
-use super::voicemail_mwi::VoicemailMwi;
+use super::voicemail_mwi::{VoicemailMwi, registered_source_matches};
 use super::voicemail_sdp::{build_answer, negotiate_offer};
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
@@ -180,7 +180,7 @@ impl Voicemail {
         }
     }
 
-    pub async fn handle_access_invite(&self, msg: &SipMessage, _src: SocketAddr) -> Result<String> {
+    pub async fn handle_access_invite(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
         if !self.is_access_invite(msg) {
             return Ok(base_response(msg, 404, "Not Found").build());
         }
@@ -215,6 +215,17 @@ impl Voicemail {
             discard_access_candidate(&call_id, &self.access_pending, tracked_access).await;
             return Ok(base_response(msg, 404, "Not Found").build());
         };
+        if !self
+            .caller_source_is_registered(&caller, &domain, src)
+            .await?
+        {
+            warn!(
+                "Voicemail access rejected from unregistered source {} for {}@{}",
+                src, caller, domain
+            );
+            discard_access_candidate(&call_id, &self.access_pending, tracked_access).await;
+            return Ok(base_response(msg, 403, "Forbidden").build());
+        }
 
         let negotiation = match negotiate_offer(&msg.body) {
             Ok(n) => n,
@@ -728,6 +739,26 @@ impl Voicemail {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.0 >= i64::from(max_messages))
+    }
+
+    async fn caller_source_is_registered(
+        &self,
+        username: &str,
+        domain: &str,
+        src: SocketAddr,
+    ) -> Result<bool> {
+        let rows: Vec<(String, u16)> = sqlx::query_as(
+            "SELECT source_ip, source_port FROM sip_registrations
+             WHERE username = ? AND domain = ? AND expires_at > NOW()",
+        )
+        .bind(username)
+        .bind(domain)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .any(|(ip, port)| registered_source_matches(&ip, port, src)))
     }
 
     fn build_local_ok(

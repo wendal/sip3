@@ -17,5 +17,6 @@ pub use message::SipMessageRecord;
 pub use security::{AutoBlockEntry, SecurityEvent, UnblockRequest};
 pub use voicemail::{
     CreateVoicemailBox, UpdateVoicemailBox, UpdateVoicemailMessage, VoicemailBox,
-    VoicemailBoxSummary, VoicemailMessage, validate_box_limits, validate_voicemail_status,
+    VoicemailBoxSummary, VoicemailMessage, validate_box_limits, validate_enabled_flag,
+    validate_voicemail_status,
 };

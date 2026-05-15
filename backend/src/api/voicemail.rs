@@ -12,9 +12,11 @@ use std::path::PathBuf;
 use super::AppState;
 use crate::models::{
     CreateVoicemailBox, UpdateVoicemailBox, UpdateVoicemailMessage, VoicemailBoxSummary,
-    VoicemailMessage, validate_box_limits, validate_voicemail_status,
+    VoicemailMessage, validate_box_limits, validate_enabled_flag, validate_voicemail_status,
 };
+use crate::sip::voicemail_mwi::VoicemailMwi;
 use crate::storage::voicemail::LocalVoicemailStorage;
+use tracing::{debug, warn};
 
 #[derive(Debug, Deserialize)]
 pub struct ListMessagesQuery {
@@ -67,6 +69,7 @@ pub async fn create_box(
         .unwrap_or(state.config.server.voicemail_max_message_secs);
     let max_messages = body.max_messages.unwrap_or(100);
 
+    validate_enabled_flag(body.enabled).map_err(|m| (StatusCode::BAD_REQUEST, m.to_string()))?;
     validate_box_limits(no_answer_secs, max_message_secs, max_messages)
         .map_err(|m| (StatusCode::BAD_REQUEST, m.to_string()))?;
 
@@ -130,6 +133,7 @@ pub async fn update_box(
     Path(id): Path<u64>,
     Json(body): Json<UpdateVoicemailBox>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    validate_enabled_flag(body.enabled).map_err(|m| (StatusCode::BAD_REQUEST, m.to_string()))?;
     // Validate limits if provided
     if body.no_answer_secs.is_some()
         || body.max_message_secs.is_some()
@@ -313,6 +317,7 @@ pub async fn update_message(
     if result.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, "Message not found".to_string()));
     }
+    notify_message_owner(&state, id).await;
 
     Ok(Json(json!({ "message": "Message updated" })))
 }
@@ -335,6 +340,44 @@ pub async fn delete_message(
     if result.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, "Message not found".to_string()));
     }
+    notify_message_owner(&state, id).await;
 
     Ok(Json(json!({ "message": "Message deleted" })))
+}
+
+async fn notify_message_owner(state: &AppState, message_id: u64) {
+    let row: Result<Option<(String, String)>, sqlx::Error> = sqlx::query_as(
+        "SELECT b.username, b.domain
+         FROM sip_voicemail_messages m
+         JOIN sip_voicemail_boxes b ON m.box_id = b.id
+         WHERE m.id = ?",
+    )
+    .bind(message_id)
+    .fetch_optional(&state.pool)
+    .await;
+
+    let Some((username, domain)) = (match row {
+        Ok(row) => row,
+        Err(e) => {
+            warn!(
+                "Failed to look up voicemail message owner for MWI notification: {}",
+                e
+            );
+            return;
+        }
+    }) else {
+        return;
+    };
+
+    match VoicemailMwi::notify_mailbox_if_available(&username, &domain).await {
+        Ok(true) => debug!("Sent voicemail MWI update for {}@{}", username, domain),
+        Ok(false) => debug!(
+            "Skipped voicemail MWI update for {}@{} because notifier is not initialized",
+            username, domain
+        ),
+        Err(e) => warn!(
+            "Failed to send voicemail MWI update for {}@{}: {}",
+            username, domain, e
+        ),
+    }
 }

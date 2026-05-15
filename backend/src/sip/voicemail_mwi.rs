@@ -2,12 +2,14 @@ use anyhow::Result;
 use chrono::Utc;
 use sqlx::MySqlPool;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
-use super::handler::{SipMessage, base_response, extract_uri, uri_username};
+use super::handler::{SipMessage, SipResponseBuilder, base_response, extract_uri, uri_username};
 use crate::config::Config;
+
+static MWI_NOTIFIER: OnceLock<VoicemailMwi> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct VoicemailMwi {
@@ -18,7 +20,18 @@ pub struct VoicemailMwi {
 
 impl VoicemailMwi {
     pub fn new(pool: MySqlPool, cfg: Config, socket: Arc<UdpSocket>) -> Self {
-        Self { pool, cfg, socket }
+        let mwi = Self { pool, cfg, socket };
+        let _ = MWI_NOTIFIER.set(mwi.clone());
+        mwi
+    }
+
+    pub async fn notify_mailbox_if_available(username: &str, domain: &str) -> Result<bool> {
+        if let Some(mwi) = MWI_NOTIFIER.get() {
+            mwi.notify_mailbox(username, domain).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub async fn handle_subscribe(&self, msg: &SipMessage, src: SocketAddr) -> Result<String> {
@@ -39,6 +52,16 @@ impl VoicemailMwi {
         let call_id = msg.call_id().unwrap_or("").to_string();
         let subscriber_tag = extract_param(from, "tag").unwrap_or_default();
         let expires = msg.expires().unwrap_or(3600);
+        if !self
+            .subscriber_source_is_registered(&subscriber, &domain, src)
+            .await?
+        {
+            warn!(
+                "Rejecting voicemail MWI SUBSCRIBE from unregistered source {} for {}@{}",
+                src, subscriber, domain
+            );
+            return Ok(base_response(msg, 403, "Forbidden").build());
+        }
 
         let contact = format!(
             "<sip:{}@{}:{}>",
@@ -54,10 +77,15 @@ impl VoicemailMwi {
             .bind(&call_id)
             .execute(&self.pool)
             .await?;
-            return Ok(base_response(msg, 200, "OK")
-                .header("Contact", &contact)
-                .header("Expires", "0")
-                .build());
+            return Ok(base_response_with_to(
+                msg,
+                200,
+                "OK",
+                &mwi_subscribe_to_header(msg.to_header().unwrap_or(""), &call_id),
+            )
+            .header("Contact", &contact)
+            .header("Expires", "0")
+            .build());
         }
 
         let expires_at = (Utc::now() + chrono::Duration::seconds(i64::from(expires))).naive_utc();
@@ -91,10 +119,15 @@ impl VoicemailMwi {
             }
         });
 
-        Ok(base_response(msg, 200, "OK")
-            .header("Contact", &contact)
-            .header("Expires", &expires.to_string())
-            .build())
+        Ok(base_response_with_to(
+            msg,
+            200,
+            "OK",
+            &mwi_subscribe_to_header(msg.to_header().unwrap_or(""), &call_id),
+        )
+        .header("Contact", &contact)
+        .header("Expires", &expires.to_string())
+        .build())
     }
 
     pub async fn notify_mailbox(&self, username: &str, domain: &str) -> Result<()> {
@@ -162,6 +195,26 @@ impl VoicemailMwi {
         .await?;
         Ok(row.unwrap_or((0, 0)))
     }
+
+    async fn subscriber_source_is_registered(
+        &self,
+        subscriber: &str,
+        domain: &str,
+        src: SocketAddr,
+    ) -> Result<bool> {
+        let rows: Vec<(String, u16)> = sqlx::query_as(
+            "SELECT source_ip, source_port FROM sip_registrations
+             WHERE username = ? AND domain = ? AND expires_at > NOW()",
+        )
+        .bind(subscriber)
+        .bind(domain)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .any(|(ip, port)| registered_source_matches(&ip, port, src)))
+    }
 }
 
 pub fn build_message_summary_body(
@@ -187,9 +240,8 @@ fn build_notify(
     saved_count: i64,
 ) -> String {
     let body = build_message_summary_body(username, domain, new_count, saved_count);
-    let call_id_short = call_id.chars().take(8).collect::<String>();
-    let from_tag = format!("sip3-mwi-{}", call_id_short);
-    let branch = format!("z9hG4bK-vm-{}-{}", call_id_short, cseq);
+    let from_tag = mwi_server_tag(call_id);
+    let branch = format!("z9hG4bK-vm-{}-{}", from_tag, cseq);
 
     format!(
         "NOTIFY sip:{}@{} SIP/2.0\r\nVia: SIP/2.0/UDP {};branch={}\r\nMax-Forwards: 70\r\nFrom: <sip:{}@{}>;tag={}\r\nTo: <sip:{}@{}>;tag={}\r\nCall-ID: {}\r\nCSeq: {} NOTIFY\r\nEvent: message-summary\r\nSubscription-State: active\r\nContent-Type: application/simple-message-summary\r\nContent-Length: {}\r\n\r\n{}",
@@ -208,6 +260,58 @@ fn build_notify(
         body.len(),
         body
     )
+}
+
+fn base_response_with_to(
+    req: &SipMessage,
+    status_code: u16,
+    reason: &str,
+    to: &str,
+) -> SipResponseBuilder {
+    let mut builder = SipResponseBuilder::new(status_code, reason);
+    for via in req.via_headers() {
+        builder = builder.header("Via", via);
+    }
+    if let Some(from) = req.from_header() {
+        builder = builder.header("From", from);
+    }
+    builder = builder.header("To", to);
+    if let Some(call_id) = req.call_id() {
+        builder = builder.header("Call-ID", call_id);
+    }
+    if let Some(cseq) = req.cseq() {
+        builder = builder.header("CSeq", cseq);
+    }
+    builder.header("Server", "SIP3/0.1.0")
+}
+
+fn mwi_server_tag(call_id: &str) -> String {
+    use sha1::{Digest, Sha1};
+
+    let digest = Sha1::digest(call_id.as_bytes());
+    let hex = format!("{digest:x}");
+    format!("sip3-mwi-{}", &hex[..16])
+}
+
+fn mwi_subscribe_to_header(to: &str, call_id: &str) -> String {
+    let tag = mwi_server_tag(call_id);
+    if to.to_ascii_lowercase().contains(";tag=") {
+        to.to_string()
+    } else {
+        format!("{};tag={}", to, tag)
+    }
+}
+
+pub fn registered_source_matches(
+    registered_ip: &str,
+    registered_port: u16,
+    src: SocketAddr,
+) -> bool {
+    registered_ip
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip == src.ip())
+        .unwrap_or(false)
+        && registered_port == src.port()
 }
 
 fn extract_param(header: &str, name: &str) -> Option<String> {
@@ -267,8 +371,8 @@ mod tests {
             branch1, branch2,
             "Branches should differ for different call-IDs"
         );
-        assert!(branch1.contains("call-aaa"));
-        assert!(branch2.contains("call-bbb"));
+        assert!(branch1.contains(&mwi_server_tag("call-aaa")));
+        assert!(branch2.contains(&mwi_server_tag("call-bbb")));
     }
 
     #[test]
@@ -283,8 +387,65 @@ mod tests {
             from1, from2,
             "From tags should differ for different call-IDs"
         );
-        assert!(from1.contains("sip3-mwi-call-aaa"));
-        assert!(from2.contains("sip3-mwi-call-bbb"));
+        assert!(from1.contains(&mwi_server_tag("call-aaa")));
+        assert!(from2.contains(&mwi_server_tag("call-bbb")));
+    }
+
+    #[test]
+    fn subscribe_ok_to_tag_matches_notify_from_tag() {
+        let call_id = "call-aaa";
+        let tag = mwi_server_tag(call_id);
+        let response_to = mwi_subscribe_to_header("<sip:1001@sip.air32.cn>", call_id);
+        let notify = build_notify("1001", "sip.air32.cn", call_id, "subscriber-tag", 1, 0, 0);
+        let notify_from = extract_header_value(&notify, "From").unwrap();
+
+        assert!(response_to.contains(&format!("tag={tag}")));
+        assert!(notify_from.contains(&format!("tag={tag}")));
+    }
+
+    #[test]
+    fn mwi_server_tag_is_token_safe_for_common_call_ids() {
+        let call_id = "abc@client.example";
+        let tag = mwi_server_tag(call_id);
+        let response_to = mwi_subscribe_to_header("<sip:1001@sip.air32.cn>", call_id);
+        let notify = build_notify("1001", "sip.air32.cn", call_id, "subscriber-tag", 1, 0, 0);
+        let notify_from = extract_header_value(&notify, "From").unwrap();
+
+        assert!(tag.starts_with("sip3-mwi-"));
+        assert!(tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+        assert!(response_to.contains(&format!("tag={tag}")));
+        assert!(notify_from.contains(&format!("tag={tag}")));
+    }
+
+    #[test]
+    fn notify_branch_is_token_safe_for_common_call_ids() {
+        let notify = build_notify(
+            "1001",
+            "sip.air32.cn",
+            "abc@client.example",
+            "subscriber-tag",
+            1,
+            0,
+            0,
+        );
+        let via = extract_header_value(&notify, "Via").unwrap();
+        let branch = via.split("branch=").nth(1).unwrap();
+
+        assert!(
+            branch
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        );
+    }
+
+    #[test]
+    fn registered_source_match_requires_same_ip_and_port() {
+        let src: SocketAddr = "192.0.2.10:5062".parse().unwrap();
+
+        assert!(registered_source_matches("192.0.2.10", 5062, src));
+        assert!(!registered_source_matches("192.0.2.10", 5063, src));
+        assert!(!registered_source_matches("192.0.2.11", 5062, src));
+        assert!(!registered_source_matches("not-an-ip", 5062, src));
     }
 
     fn extract_header_value(msg: &str, header: &str) -> Option<String> {

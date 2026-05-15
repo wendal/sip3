@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS sip_voicemail_messages (
     status VARCHAR(32) NOT NULL DEFAULT 'new',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     heard_at DATETIME NULL,
+    UNIQUE KEY uniq_voicemail_storage_key (storage_key),
     KEY idx_voicemail_box_status_created (box_id, status, created_at),
     KEY idx_voicemail_call_id (call_id),
     CONSTRAINT fk_voicemail_message_box

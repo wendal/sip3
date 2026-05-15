@@ -228,8 +228,8 @@ pub fn validate_box_limits(
     if !(1..=600).contains(&no_answer_secs) {
         return Err("no_answer_secs must be between 1 and 600");
     }
-    if !(1..=3600).contains(&max_message_secs) {
-        return Err("max_message_secs must be between 1 and 3600");
+    if !(1..=1250).contains(&max_message_secs) {
+        return Err("max_message_secs must be between 1 and 1250");
     }
     if !(1..=10_000).contains(&max_messages) {
         return Err("max_messages must be between 1 and 10000");
