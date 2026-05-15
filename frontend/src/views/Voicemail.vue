@@ -192,6 +192,11 @@ const statusType = (status) => ({
   deleted: 'info',
 }[status] || '')
 
+const errorMessage = (e, fallback) => {
+  const data = e.response?.data
+  return (typeof data === 'string' && data) || e.message || fallback
+}
+
 const fetchBoxes = async () => {
   loadingBoxes.value = true
   try {
@@ -219,8 +224,24 @@ const fetchMessages = async (box) => {
   }
 }
 
-const downloadMessage = (row) => {
-  window.open(`/api/voicemail/messages/${row.id}/download`, '_blank')
+const downloadMessage = async (row) => {
+  let url = ''
+  try {
+    const res = await api.get(`/voicemail/messages/${row.id}/download`, { responseType: 'blob' })
+    url = URL.createObjectURL(res.data)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `voicemail-${row.id}.wav`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  } catch (e) {
+    ElMessage.error(errorMessage(e, '下载失败'))
+  } finally {
+    if (url) {
+      URL.revokeObjectURL(url)
+    }
+  }
 }
 
 const clearAudioPreview = () => {
@@ -241,7 +262,7 @@ const playMessage = async (row) => {
     audioUrl.value = URL.createObjectURL(res.data)
   } catch (e) {
     audioVisible.value = false
-    ElMessage.error(e.response?.data || e.message || '播放失败')
+    ElMessage.error(errorMessage(e, '播放失败'))
   } finally {
     playingId.value = null
   }
@@ -259,7 +280,11 @@ const updateMessageStatus = async (row, status) => {
 }
 
 const deleteMessage = async (row) => {
-  await ElMessageBox.confirm('确认删除该留言？删除后状态会标记为已删除。', '确认删除', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm('确认删除该留言？删除后状态会标记为已删除。', '确认删除', { type: 'warning' })
+  } catch {
+    return
+  }
   await updateMessageStatus(row, 'deleted')
 }
 
