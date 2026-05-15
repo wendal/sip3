@@ -8,6 +8,7 @@ import Acl from '../views/Acl.vue'
 import Phone from '../views/Phone.vue'
 import Security from '../views/Security.vue'
 import Conferences from '../views/Conferences.vue'
+import Voicemail from '../views/Voicemail.vue'
 
 const routes = [
   { path: '/login', component: Login, meta: { public: true } },
@@ -19,6 +20,7 @@ const routes = [
   { path: '/admin-users', component: AdminUsers },
   { path: '/acl', component: Acl },
   { path: '/conferences', component: Conferences },
+  { path: '/voicemail', component: Voicemail },
   { path: '/security', component: Security },
 ]
 
