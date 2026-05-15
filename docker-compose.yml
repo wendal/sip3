@@ -42,6 +42,11 @@ services:
       SIP3__SERVER__RTP_PORT_MAX: "10099"
       SIP3__SERVER__CONFERENCE_RTP_PORT_MIN: "10100"
       SIP3__SERVER__CONFERENCE_RTP_PORT_MAX: "10199"
+      SIP3__SERVER__VOICEMAIL_ACCESS_EXTENSION: "*97"
+      SIP3__SERVER__VOICEMAIL_RTP_PORT_MIN: "10200"
+      SIP3__SERVER__VOICEMAIL_RTP_PORT_MAX: "10299"
+      SIP3__SERVER__VOICEMAIL_STORAGE_DIR: "/app/voicemail"
+      SIP3__SERVER__VOICEMAIL_PROMPT_DIR: "/app/voicemail/prompts"
       SIP3__SERVER__WEBRTC_PORT_MIN: "20000"
       SIP3__SERVER__WEBRTC_PORT_MAX: "20099"
       SIP3__AUTH__REALM: "sip.air32.cn"
@@ -56,7 +61,10 @@ services:
       - "3000:3000"
       - "10000-10099:10000-10099/udp"
       - "10100-10199:10100-10199/udp"
+      - "10200-10299:10200-10299/udp"
       - "20000-20099:20000-20099/udp"
+    volumes:
+      - ./voicemail:/app/voicemail
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 15s

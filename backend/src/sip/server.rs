@@ -62,6 +62,10 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         warn!("Conference participant reconciliation failed: {}", e);
     }
 
+    if let Err(e) = handler.voicemail().reconcile_on_startup().await {
+        warn!("Voicemail startup reconciliation failed: {}", e);
+    }
+
     // Spawn the SIP/TLS (TCP) server if cert + key are configured.
     if !cfg.server.tls_cert.is_empty() && !cfg.server.tls_key.is_empty() {
         let tls_cfg = cfg.clone();
