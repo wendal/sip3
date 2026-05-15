@@ -91,9 +91,13 @@ pub fn pcm16_wav_bytes(samples: &[i16], sample_rate: u32) -> Vec<u8> {
         .checked_mul(2)
         .expect("sample_rate * 2 overflows u32");
     
+    let riff_chunk_size = 36u32
+        .checked_add(data_len)
+        .expect("RIFF chunk size exceeds u32 limit");
+    
     let mut out = Vec::with_capacity(44 + data_len as usize);
     out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(&riff_chunk_size.to_le_bytes());
     out.extend_from_slice(b"WAVEfmt ");
     out.extend_from_slice(&16u32.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes());
@@ -132,7 +136,10 @@ pub fn read_pcm16_wav(bytes: &[u8]) -> Result<DecodedWav> {
         ]) as usize;
         offset += 8;
         if id == b"data" {
-            if offset + len > bytes.len() {
+            let data_end = offset
+                .checked_add(len)
+                .ok_or_else(|| anyhow!("truncated WAV data"))?;
+            if data_end > bytes.len() {
                 return Err(anyhow!("truncated WAV data"));
             }
             let num_samples = len / 2;
@@ -140,7 +147,7 @@ pub fn read_pcm16_wav(bytes: &[u8]) -> Result<DecodedWav> {
                 return Err(anyhow!("WAV data exceeds maximum sample limit"));
             }
             let mut samples = Vec::with_capacity(num_samples);
-            for chunk in bytes[offset..offset + len].chunks_exact(2) {
+            for chunk in bytes[offset..data_end].chunks_exact(2) {
                 samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
             }
             return Ok(DecodedWav {
@@ -243,6 +250,27 @@ mod tests {
             "got error: {}",
             err_str
         );
+    }
+
+    #[test]
+    fn read_pcm16_wav_rejects_data_chunk_past_eof() {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&100u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // audio_format = 1
+        wav.extend_from_slice(&1u16.to_le_bytes()); // channels = 1
+        wav.extend_from_slice(&8000u32.to_le_bytes()); // sample_rate
+        wav.extend_from_slice(&16000u32.to_le_bytes()); // byte_rate
+        wav.extend_from_slice(&2u16.to_le_bytes()); // block_align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits_per_sample
+        // Add data chunk with length that claims more data than available
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&1000u32.to_le_bytes()); // claims 1000 bytes but file ends here
+        let result = read_pcm16_wav(&wav);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated WAV data"));
     }
 
     #[test]
