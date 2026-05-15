@@ -11,6 +11,7 @@ pub mod registrar;
 pub mod server;
 pub mod tcp_server;
 pub mod transport;
+pub mod voicemail;
 pub mod voicemail_media;
 pub mod voicemail_mwi;
 pub mod voicemail_sdp;
