@@ -2,6 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
+const MAX_WAV_SAMPLES: usize = 10_000_000;
+
 #[derive(Debug, Clone)]
 pub struct DecodedWav {
     pub sample_rate: u32,
@@ -64,12 +66,31 @@ impl LocalVoicemailStorage {
 fn sanitize_key_part(input: &str) -> String {
     input
         .chars()
-        .map(|c| if matches!(c, '/' | '\\' | ':') { '_' } else { c })
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | '\0') {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
 pub fn pcm16_wav_bytes(samples: &[i16], sample_rate: u32) -> Vec<u8> {
-    let data_len = (samples.len() * 2) as u32;
+    if sample_rate == 0 {
+        panic!("sample_rate must be non-zero");
+    }
+    
+    let num_samples = samples.len();
+    let data_len = num_samples
+        .checked_mul(2)
+        .and_then(|v| u32::try_from(v).ok())
+        .expect("WAV data size exceeds u32 limit");
+    
+    let byte_rate = sample_rate
+        .checked_mul(2)
+        .expect("sample_rate * 2 overflows u32");
+    
     let mut out = Vec::with_capacity(44 + data_len as usize);
     out.extend_from_slice(b"RIFF");
     out.extend_from_slice(&(36 + data_len).to_le_bytes());
@@ -78,7 +99,7 @@ pub fn pcm16_wav_bytes(samples: &[i16], sample_rate: u32) -> Vec<u8> {
     out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&sample_rate.to_le_bytes());
-    out.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
     out.extend_from_slice(&2u16.to_le_bytes());
     out.extend_from_slice(&16u16.to_le_bytes());
     out.extend_from_slice(b"data");
@@ -114,7 +135,11 @@ pub fn read_pcm16_wav(bytes: &[u8]) -> Result<DecodedWav> {
             if offset + len > bytes.len() {
                 return Err(anyhow!("truncated WAV data"));
             }
-            let mut samples = Vec::with_capacity(len / 2);
+            let num_samples = len / 2;
+            if num_samples > MAX_WAV_SAMPLES {
+                return Err(anyhow!("WAV data exceeds maximum sample limit"));
+            }
+            let mut samples = Vec::with_capacity(num_samples);
             for chunk in bytes[offset..offset + len].chunks_exact(2) {
                 samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
             }
@@ -123,7 +148,15 @@ pub fn read_pcm16_wav(bytes: &[u8]) -> Result<DecodedWav> {
                 samples,
             });
         }
-        offset += len + (len % 2);
+        // Skip non-data chunks with padding
+        let padding = len % 2;
+        offset = offset
+            .checked_add(len)
+            .and_then(|o| o.checked_add(padding))
+            .ok_or_else(|| anyhow!("WAV chunk offset overflow"))?;
+        if offset > bytes.len() {
+            return Err(anyhow!("WAV chunk extends past file end"));
+        }
     }
     Err(anyhow!("WAV data chunk not found"))
 }
@@ -131,7 +164,6 @@ pub fn read_pcm16_wav(bytes: &[u8]) -> Result<DecodedWav> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     #[test]
     fn wav_round_trip_preserves_samples() {
@@ -140,6 +172,108 @@ mod tests {
         let decoded = read_pcm16_wav(&wav).expect("valid wav");
         assert_eq!(decoded.sample_rate, 8000);
         assert_eq!(decoded.samples, samples);
+    }
+
+    #[test]
+    fn wav_empty_samples_round_trip() {
+        let samples: Vec<i16> = vec![];
+        let wav = pcm16_wav_bytes(&samples, 8000);
+        let decoded = read_pcm16_wav(&wav).expect("valid empty wav");
+        assert_eq!(decoded.sample_rate, 8000);
+        assert_eq!(decoded.samples, samples);
+    }
+
+    #[test]
+    #[should_panic(expected = "sample_rate must be non-zero")]
+    fn wav_zero_sample_rate_panics() {
+        let samples = vec![100i16];
+        pcm16_wav_bytes(&samples, 0);
+    }
+
+    #[test]
+    fn read_pcm16_wav_rejects_empty_input() {
+        let result = read_pcm16_wav(&[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not a WAV file"));
+    }
+
+    #[test]
+    fn read_pcm16_wav_rejects_truncated_header() {
+        let truncated = b"RIFF\x00\x00\x00\x00WAVE";
+        let result = read_pcm16_wav(truncated);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not a WAV file"));
+    }
+
+    #[test]
+    fn read_pcm16_wav_rejects_stereo() {
+        let mut wav = pcm16_wav_bytes(&[100i16], 8000);
+        // Change channel count from 1 to 2 at offset 22-23
+        wav[22] = 2;
+        wav[23] = 0;
+        let result = read_pcm16_wav(&wav);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("WAV must be mono PCM16"));
+    }
+
+    #[test]
+    fn read_pcm16_wav_rejects_malformed_chunk_overflow() {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&100u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // audio_format = 1
+        wav.extend_from_slice(&1u16.to_le_bytes()); // channels = 1
+        wav.extend_from_slice(&8000u32.to_le_bytes()); // sample_rate
+        wav.extend_from_slice(&16000u32.to_le_bytes()); // byte_rate
+        wav.extend_from_slice(&2u16.to_le_bytes()); // block_align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits_per_sample
+        // Add a non-data chunk with a length that extends past the file
+        wav.extend_from_slice(b"junk");
+        wav.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // huge length
+        let result = read_pcm16_wav(&wav);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("chunk extends past file end") || err_str.contains("overflow"),
+            "got error: {}",
+            err_str
+        );
+    }
+
+    #[test]
+    fn sanitize_key_part_removes_dangerous_chars() {
+        assert_eq!(sanitize_key_part("foo/bar"), "foo_bar");
+        assert_eq!(sanitize_key_part("foo\\bar"), "foo_bar");
+        assert_eq!(sanitize_key_part("C:Users"), "C_Users");
+        assert_eq!(sanitize_key_part("foo\0bar"), "foo_bar");
+        assert_eq!(sanitize_key_part("safe-123.wav"), "safe-123.wav");
+    }
+
+    #[test]
+    fn path_for_key_rejects_traversal() {
+        let storage = LocalVoicemailStorage::new(PathBuf::from("/tmp/vm"));
+        assert!(storage.path_for_key("../etc/passwd").is_err());
+        assert!(storage.path_for_key("foo/../bar").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_for_key_rejects_absolute_unix() {
+        let storage = LocalVoicemailStorage::new(PathBuf::from("/tmp/vm"));
+        assert!(storage.path_for_key("/etc/passwd").is_err());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn path_for_key_rejects_absolute_windows() {
+        let storage = LocalVoicemailStorage::new(PathBuf::from("C:\\voicemail"));
+        assert!(storage.path_for_key("C:\\Windows\\System32\\config").is_err());
+        assert!(storage.path_for_key("D:\\data").is_err());
     }
 
     #[tokio::test]
@@ -154,6 +288,6 @@ mod tests {
         assert_eq!(storage.read(&key).await.expect("read"), b"hello");
         storage.delete(&key).await.expect("delete");
         assert!(!root.join(&key).exists());
-        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root).await;
     }
 }
