@@ -52,6 +52,14 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 - ✅ Browser softphone at `/phone` — SIP.js + WebRTC, TURN auto-configured
 - ✅ Search, pagination, de-register, call statistics
 
+### What's new in v1.2.0
+
+- ✅ Added reverse WebRTC bridge for **SIP caller -> browser callee** flows.
+- ✅ Fixed CANCEL forwarding to preserve transaction consistency with forwarded INVITE.
+- ✅ Added sender-source registration port refresh for authenticated INVITE/MESSAGE to survive NAT port rebinding.
+- ✅ Fixed RTP relay source-port behavior so media packets are sent from SDP-signaled relay ports.
+- ✅ Added `migrations/010_sip_messages.sql` for MESSAGE persistence schema completeness.
+
 ### Quick Start
 
 ```bash
@@ -165,13 +173,15 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | SIP3__TURN__TTL_SECONDS           | 86400          | TURN credential lifetime (seconds) |
 | SIP3__TURN__SERVER                | (empty)        | TURN server URI (returned to client)|
 
+> **Important**: set `SIP3__SERVER__PUBLIC_IP` to a **numeric public IPv4** (for example `154.8.159.79`) to avoid SIP endpoint compatibility issues caused by domain names inside SDP `c=IN IP4`.
+
 ### Development
 
 ```bash
 # Backend (Rust)
 cd backend
 cargo build
-cargo test          # 23 tests
+cargo test          # 39 tests
 cargo clippy -- -D warnings
 
 # Frontend (Vue 3)
@@ -179,6 +189,12 @@ cd frontend
 npm install
 npm run dev         # dev server on :5173
 ```
+
+### Troubleshooting
+
+- **No ringing / MESSAGE not delivered**: check `sip_registrations.source_ip/source_port` against the sender's real source socket.
+- **Call connected but no audio**: verify UDP RTP range (`10000-10099`) is open and relay ports in SDP match packet source ports.
+- **MESSAGE persistence errors (1146)**: ensure migration `010_sip_messages.sql` has been applied.
 
 See [docs/deployment.md](docs/deployment.md) for full deployment and TLS setup guide.
 
@@ -224,6 +240,14 @@ SIP3 是一个功能完整的 SIP 代理/注册服务器，使用 Rust 构建后
 - ✅ Vue 3 + Element Plus 全中文管理界面
 - ✅ `/phone` 浏览器软电话 — SIP.js + WebRTC，自动获取 TURN 凭证
 - ✅ 搜索、分页、强制注销、通话统计
+
+### v1.2.0 更新亮点
+
+- ✅ 新增 **SIP 主叫 -> 浏览器被叫** 的反向 WebRTC 桥接。
+- ✅ 修复 CANCEL 转发事务一致性（与已转发 INVITE 保持一致）。
+- ✅ 新增已认证 INVITE/MESSAGE 的注册源端口自愈，缓解 NAT 端口漂移问题。
+- ✅ 修复 RTP relay 源端口行为，确保媒体源端口与 SDP 宣告端口一致。
+- ✅ 新增 `migrations/010_sip_messages.sql`，补齐 MESSAGE 存储表迁移。
 
 ### 快速开始
 
@@ -287,7 +311,7 @@ SIP 电话(TLS) ──TLS 5061──┘         │
 # 后端构建和测试
 cd backend
 cargo build
-cargo test          # 23 个测试用例
+cargo test          # 39 个测试用例
 cargo clippy -- -D warnings
 
 # 前端开发
@@ -295,5 +319,13 @@ cd frontend
 npm install
 npm run dev         # 开发服务器 :5173
 ```
+
+### 常见问题排查
+
+- **不响铃 / MESSAGE 收不到**：优先核对 `sip_registrations` 中 `source_ip/source_port` 是否与实时来包一致。
+- **接通无声音**：确认 UDP `10000-10099` 已放行，并核对 SDP 中继端口与实际 RTP 源端口一致。
+- **MESSAGE 入库报 1146**：确认已执行迁移 `010_sip_messages.sql`。
+
+> **重要**：`SIP3__SERVER__PUBLIC_IP` 建议配置为公网 **数字 IPv4**（例如 `154.8.159.79`），避免终端因 SDP 中使用域名导致兼容问题。
 
 详细部署和 TLS 配置指南请参阅 [docs/deployment.md](docs/deployment.md)。

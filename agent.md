@@ -1,21 +1,29 @@
-# SIP3 部署与排障经验总结（2026-05）
+# SIP3 生产排障与发布经验（v1.2.0）
 
-## 1. 本次问题根因
-- 现象：Linphone 与网页可拨通，但接听后立即断开。
-- 根因：`Linphone -> 网页` 方向原逻辑未进入 WebRTC 反向桥接分支，普通 SIP SDP 被按纯 RTP relay 处理，导致接听后协商链路不完整。
+## 1. 真实根因（按出现顺序）
+- `Linphone -> 网页` 方向缺少反向 WebRTC 桥接，出现“接听后秒断”。
+- `sip_messages` 表在生产库缺失，导致 MESSAGE 持久化失败（1146）。
+- 两个 Linphone 账号发生 NAT 端口漂移，注册表 `source_port` 与实际发消息/发呼端口不一致，造成“消息/呼叫路由到旧端口”。
+- RTP relay 发包端口与 SDP 宣告端口不一致，导致接通后无音频（Linphone 会丢弃不匹配源端口媒体）。
 
-## 2. 修复要点
-- 在 `proxy.rs` 增加“普通 SIP SDP + WebSocket 被叫”判定，触发反向 WebRTC 会话创建。
-- 在 `webrtc_gateway.rs` 增加 SIP 主叫方向会话流（网关先发 offer，200 OK 时应用 browser answer）。
-- 在 `handler.rs` 的 `relay_response()` 中按会话方向处理 200 INVITE SDP，避免混用正向/反向逻辑。
-- 增加测试 `test_websocket_callee_with_plain_sdp_requires_reverse_bridge` 防回归。
+## 2. 代码修复策略
+- `proxy.rs`：补齐 SIP 主叫到 Web 被叫的反向桥接路径。
+- `handler.rs` + `webrtc_gateway.rs`：按呼叫方向处理 200 INVITE SDP 与 answer 应用。
+- `proxy.rs`：CANCEL 改为按已转发 INVITE 的目标 URI 与代理分支构造，避免事务不匹配。
+- `proxy.rs`：对合法来源 INVITE/MESSAGE 增加注册源端口自愈（同 IP 且端口变化时刷新 `sip_registrations.source_port`）。
+- `media.rs`：RTP 转发改为“交叉 socket 发包”，保证端点收到的媒体源端口与 SDP 一致。
+- `migrations/010_sip_messages.sql`：补齐 MESSAGE 存储表迁移，避免环境漏表。
 
-## 3. 线上排障经验
-- 先用 **Call-ID** 串联 CDR、SIP 日志与端侧日志，再判断谁先发 BYE，避免误改。
-- “接听即断开”优先检查：`INVITE/200/ACK/BYE` 完整性与 SDP 方向匹配，而不是先怀疑网络。
-- WebRTC 网关中 SIP 对端地址学习不应只依赖第一次包，源地址变化时应允许更新。
+## 3. 线上排障方法（高价值）
+- 必须用 **Call-ID** 贯穿 SIP 日志、抓包、CDR，避免错配不同通话。
+- 先证据后改动：先确认 INVITE/200/ACK/BYE/CANCEL 完整链路，再改逻辑。
+- “不响铃/消息失败”先查注册路由（IP/Port/Expires）是否与实时来包一致。
+- “已接通无声”不能只看 SIP 成功，必须抓 RTP 并验证端口方向与源端口一致性。
 
-## 4. 发布与验证建议
-- 变更前先跑后端 `clippy -D warnings` 与 `cargo test`。
-- 部署后至少验证：容器健康、`/api/health`、关键日志无异常。
-- 双向呼叫（网页->Linphone / Linphone->网页）都需回归验证，避免只测单方向。
+## 4. 发布与验证清单
+- 本地：`cargo test`、`cargo clippy -- -D warnings`。
+- 线上：`docker compose up -d --build backend`、`/api/health`、关键日志无异常。
+- 业务验收最少覆盖：
+  1. MESSAGE 双向收发与入库；
+  2. 双向呼叫（1001->1003、1003->1001）；
+  3. 提前挂断、拒接、正常接通后双向语音。
