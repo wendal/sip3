@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use sqlx::mysql::MySqlPoolOptions;
 use sqlx::MySqlPool;
+use sqlx::mysql::MySqlPoolOptions;
 use std::time::Duration;
 use tracing::{info, warn};
 

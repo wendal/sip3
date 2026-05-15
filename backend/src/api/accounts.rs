@@ -1,10 +1,10 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
-use bcrypt::{hash, DEFAULT_COST};
-use serde_json::{json, Value};
+use bcrypt::{DEFAULT_COST, hash};
+use serde_json::{Value, json};
 
 use super::AppState;
 use crate::models::{Account, CreateAccount, UpdateAccount};
@@ -77,12 +77,13 @@ pub async fn create(
     .map_err(|e| {
         // Use SQLx's structured error API instead of string-matching.
         if let sqlx::Error::Database(db_err) = &e
-            && db_err.is_unique_violation() {
-                return (
-                    StatusCode::CONFLICT,
-                    "Account already exists for this username and domain".to_string(),
-                );
-            }
+            && db_err.is_unique_violation()
+        {
+            return (
+                StatusCode::CONFLICT,
+                "Account already exists for this username and domain".to_string(),
+            );
+        }
         (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
 

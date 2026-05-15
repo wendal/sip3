@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
-use super::handler::{base_response, extract_uri, uri_username, SipMessage};
+use super::handler::{SipMessage, base_response, extract_uri, uri_username};
 use crate::config::Config;
 
 #[derive(Debug, Clone, Copy)]

@@ -12,8 +12,8 @@ mod tests {
     use sip3_backend::sip::media::{MediaRelay, rewrite_sdp, sdp_audio_port, sdp_has_crypto};
     use sip3_backend::sip::proxy::{
         CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL,
-        build_forwarded_cancel_for_target, should_refresh_registration_source,
-        should_bridge_plain_sip_to_websocket_target, should_preserve_webrtc_sdp_for_target,
+        build_forwarded_cancel_for_target, should_bridge_plain_sip_to_websocket_target,
+        should_preserve_webrtc_sdp_for_target, should_refresh_registration_source,
     };
     use sip3_backend::sip::registrar::{ACCOUNT_LOOKUP_SQL, generate_nonce, validate_nonce};
     use sip3_backend::sip::transport::TransportRegistry;
@@ -372,9 +372,7 @@ mod tests {
         );
         assert!(forwarded.contains("Via: SIP/2.0/UDP sip.air32.cn;branch=z9hG4bKproxy"));
         assert!(
-            forwarded.contains(
-                "Via: SIP/2.0/UDP 192.168.1.2:56473;branch=z9hG4bK.NMNgTadYq;rport"
-            )
+            forwarded.contains("Via: SIP/2.0/UDP 192.168.1.2:56473;branch=z9hG4bK.NMNgTadYq;rport")
         );
         assert!(forwarded.contains("Max-Forwards: 69"));
         assert!(forwarded.ends_with("\r\n\r\n"));

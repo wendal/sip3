@@ -1,16 +1,16 @@
 use axum::{
+    Json,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use bcrypt::verify;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::IpAddr;
 use tracing::warn;
 
-use super::{jwt, AppState};
+use super::{AppState, jwt};
 use crate::models::AdminUser;
-use crate::security_guard::{persist_security_event, AuthSurface, SecurityEventType};
+use crate::security_guard::{AuthSurface, SecurityEventType, persist_security_event};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct LoginRequest {
@@ -86,12 +86,12 @@ pub async fn login(
                         "auto-ban: api login brute force",
                     )
                     .await
-                    {
-                        warn!(
-                            "Failed to persist API login auto-ban ACL for {}: {}",
-                            source_ip, e
-                        );
-                    }
+                {
+                    warn!(
+                        "Failed to persist API login auto-ban ACL for {}: {}",
+                        source_ip, e
+                    );
+                }
                 if let Err(e) = persist_security_event(
                     &state.pool,
                     AuthSurface::ApiLogin,
@@ -139,12 +139,12 @@ pub async fn login(
                     "auto-ban: api login brute force",
                 )
                 .await
-                {
-                    warn!(
-                        "Failed to persist API login auto-ban ACL for {}: {}",
-                        source_ip, e
-                    );
-                }
+            {
+                warn!(
+                    "Failed to persist API login auto-ban ACL for {}: {}",
+                    source_ip, e
+                );
+            }
             if let Err(e) = persist_security_event(
                 &state.pool,
                 AuthSurface::ApiLogin,
@@ -195,13 +195,15 @@ pub async fn login(
 fn extract_client_ip(headers: &HeaderMap) -> String {
     if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
         && let Some(first) = forwarded.split(',').map(str::trim).find(|s| !s.is_empty())
-            && parse_ip(first).is_some() {
-                return first.to_string();
-            }
+        && parse_ip(first).is_some()
+    {
+        return first.to_string();
+    }
     if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok())
-        && parse_ip(real_ip).is_some() {
-            return real_ip.to_string();
-        }
+        && parse_ip(real_ip).is_some()
+    {
+        return real_ip.to_string();
+    }
     "0.0.0.0".to_string()
 }
 

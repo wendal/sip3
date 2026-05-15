@@ -1,9 +1,9 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::AppState;
 use crate::acl::parse_cidr;
@@ -59,12 +59,14 @@ pub async fn update(
     Json(body): Json<UpdateAclEntry>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     if let Some(action) = &body.action
-        && action != "allow" && action != "deny" {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "action must be 'allow' or 'deny'".to_string(),
-            ));
-        }
+        && action != "allow"
+        && action != "deny"
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "action must be 'allow' or 'deny'".to_string(),
+        ));
+    }
     let canonical_cidr = if let Some(cidr) = &body.cidr {
         Some(parse_cidr(cidr).map_err(|e| (StatusCode::BAD_REQUEST, e))?)
     } else {

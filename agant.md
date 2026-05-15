@@ -21,6 +21,6 @@
 - Firefox 出现 `The object can not be found here.` 常见于麦克风权限或媒体设备不可用，应给出可读错误提示。
 
 ## 5. 发布流程
-- 发布前在主干执行完整校验（backend: fmt/test/clippy；frontend: node tests/build）。
+- 发布前优先在仓库根目录执行 `pwsh ./scripts/local-ci.ps1`，确保与 CI 的 backend `fmt/build/test/clippy` 和 frontend `npm ci/build` 对齐。
 - 使用语义化标签发布（如 `v1.1.2`），并同步创建 GitHub Release。
 - 分支完成后及时合并、推送主干，并清理 feature 分支与 worktree，保持仓库整洁。

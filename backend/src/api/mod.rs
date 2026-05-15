@@ -1,11 +1,11 @@
 use anyhow::Result;
 use axum::{
+    Router,
     extract::Request,
     http::StatusCode,
     middleware::{self, Next},
     response::Response,
     routing::{get, post, put},
-    Router,
 };
 use sqlx::MySqlPool;
 use std::sync::Arc;
@@ -72,10 +72,11 @@ async fn require_auth(
 ) -> Result<Response, StatusCode> {
     // Try Bearer JWT first.
     if let Some(token) = extract_bearer_token(&req)
-        && let Ok(claims) = jwt::verify_token(&token, &state.jwt_secret) {
-            req.extensions_mut().insert(claims);
-            return Ok(next.run(req).await);
-        }
+        && let Ok(claims) = jwt::verify_token(&token, &state.jwt_secret)
+    {
+        req.extensions_mut().insert(claims);
+        return Ok(next.run(req).await);
+    }
 
     // Try X-Api-Key.
     if let Some(api_key) = &state.config.auth.api_key {

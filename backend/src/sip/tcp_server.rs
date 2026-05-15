@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
 use sqlx::MySqlPool;
 use std::net::SocketAddr;
@@ -116,9 +116,10 @@ fn extract_content_length(headers: &str) -> usize {
         let lower = line.to_lowercase();
         if (lower.starts_with("content-length:") || lower.starts_with("l:"))
             && let Some(colon) = line.find(':')
-                && let Ok(n) = line[colon + 1..].trim().parse::<usize>() {
-                    return n;
-                }
+            && let Ok(n) = line[colon + 1..].trim().parse::<usize>()
+        {
+            return n;
+        }
     }
     0
 }

@@ -596,10 +596,20 @@ impl Proxy {
             .flatten()
             .map(|(uri,)| uri)
             .or_else(|| msg.request_uri.clone())
-            .unwrap_or_else(|| format!("sip:{}@{}", uri_username(msg.request_uri.as_deref().unwrap_or("")).unwrap_or_default(), domain));
+            .unwrap_or_else(|| {
+                format!(
+                    "sip:{}@{}",
+                    uri_username(msg.request_uri.as_deref().unwrap_or("")).unwrap_or_default(),
+                    domain
+                )
+            });
 
-            let forwarded =
-                build_forwarded_cancel_for_target(msg, &target_uri, max_fwd.saturating_sub(1), &domain);
+            let forwarded = build_forwarded_cancel_for_target(
+                msg,
+                &target_uri,
+                max_fwd.saturating_sub(1),
+                &domain,
+            );
             let _ = self.send_sip(forwarded, target).await;
             info!("Forwarded CANCEL for call {} to {}", call_id, target);
         } else {

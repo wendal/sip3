@@ -1,10 +1,10 @@
-use axum::{extract::Query, extract::State, http::StatusCode, Json};
+use axum::{Json, extract::Query, extract::State, http::StatusCode};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::AppState;
 use crate::models::{AutoBlockEntry, SecurityEvent, UnblockRequest};
-use crate::security_guard::{persist_security_event, AuthSurface, SecurityEventType};
+use crate::security_guard::{AuthSurface, SecurityEventType, persist_security_event};
 
 #[derive(Debug, Deserialize)]
 pub struct SecurityEventsQuery {

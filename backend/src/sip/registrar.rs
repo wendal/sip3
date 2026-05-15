@@ -8,13 +8,13 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use super::handler::{
-    base_response, extract_uri, make_www_authenticate, md5_hex, parse_auth_params, uri_username,
-    SipMessage,
+    SipMessage, base_response, extract_uri, make_www_authenticate, md5_hex, parse_auth_params,
+    uri_username,
 };
 use super::presence::{Presence, PresenceStatus};
 use crate::config::Config;
 use crate::security_guard::{
-    persist_security_event, AuthSurface, SecurityEventType, SecurityGuard,
+    AuthSurface, SecurityEventType, SecurityGuard, persist_security_event,
 };
 
 pub const ACCOUNT_LOOKUP_SQL: &str = "\

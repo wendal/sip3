@@ -1,10 +1,10 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
-use bcrypt::{hash, DEFAULT_COST};
-use serde_json::{json, Value};
+use bcrypt::{DEFAULT_COST, hash};
+use serde_json::{Value, json};
 
 use super::AppState;
 use crate::models::{AdminUser, CreateAdminUser, UpdateAdminUser};
@@ -47,12 +47,13 @@ pub async fn create(
         .await
         .map_err(|e| {
             if let sqlx::Error::Database(db_err) = &e
-                && db_err.is_unique_violation() {
-                    return (
-                        StatusCode::CONFLICT,
-                        "Admin user with this username already exists".to_string(),
-                    );
-                }
+                && db_err.is_unique_violation()
+            {
+                return (
+                    StatusCode::CONFLICT,
+                    "Admin user with this username already exists".to_string(),
+                );
+            }
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 

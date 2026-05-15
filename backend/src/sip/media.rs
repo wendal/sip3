@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -208,9 +208,10 @@ async fn run_relay_loop(
 
         // Forward to the peer if its address is known.
         if let Some(dst) = *peer_addr.lock().await
-            && let Err(e) = send_socket.send_to(&buf[..len], dst).await {
-                warn!("RTP relay forward error to {}: {}", dst, e);
-            }
+            && let Err(e) = send_socket.send_to(&buf[..len], dst).await
+        {
+            warn!("RTP relay forward error to {}: {}", dst, e);
+        }
     }
 }
 

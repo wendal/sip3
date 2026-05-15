@@ -178,10 +178,14 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 ### Development
 
 ```bash
+# Local CI parity check (recommended before push)
+pwsh ./scripts/local-ci.ps1
+
 # Backend (Rust)
 cd backend
+cargo fmt --check
 cargo build
-cargo test          # 39 tests
+cargo test
 cargo clippy -- -D warnings
 
 # Frontend (Vue 3)
@@ -308,10 +312,14 @@ SIP 电话(TLS) ──TLS 5061──┘         │
 ### 开发说明
 
 ```bash
+# 本地 CI 对齐检查（推荐在 push 前执行）
+pwsh ./scripts/local-ci.ps1
+
 # 后端构建和测试
 cd backend
+cargo fmt --check
 cargo build
-cargo test          # 39 个测试用例
+cargo test
 cargo clippy -- -D warnings
 
 # 前端开发
