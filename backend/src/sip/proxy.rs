@@ -650,7 +650,9 @@ impl Proxy {
 
     pub async fn handle_cancel(&self, msg: &SipMessage, _src: SocketAddr) -> Result<String> {
         let call_id = msg.call_id().unwrap_or("").to_string();
-        self.voicemail.cancel_no_answer_timer(&call_id).await;
+        self.voicemail
+            .cancel_no_answer_timer_for_caller_cancel(&call_id)
+            .await;
         let domain = self.cfg.server.sip_domain.clone();
         let max_fwd = msg
             .header("max-forwards")

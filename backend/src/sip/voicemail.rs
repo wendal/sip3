@@ -43,7 +43,8 @@ pub struct Voicemail {
 #[derive(Debug)]
 enum NoAnswerTimerEntry {
     Ringing(tokio::task::JoinHandle<()>),
-    Fired,
+    Firing,
+    Canceled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -497,17 +498,51 @@ impl Voicemail {
     }
 
     pub async fn cancel_no_answer_timer(&self, call_id: &str) -> NoAnswerTimerCancel {
-        match self.no_answer.lock().await.remove(call_id) {
+        let mut no_answer = self.no_answer.lock().await;
+        match no_answer.remove(call_id) {
             Some(NoAnswerTimerEntry::Ringing(handle)) => {
                 handle.abort();
                 debug!("Cancelled voicemail no-answer timer for {}", call_id);
                 NoAnswerTimerCancel::Canceled
             }
-            Some(NoAnswerTimerEntry::Fired) => {
+            Some(NoAnswerTimerEntry::Firing) => {
+                no_answer.insert(call_id.to_string(), NoAnswerTimerEntry::Firing);
                 debug!("Voicemail no-answer timer already fired for {}", call_id);
                 NoAnswerTimerCancel::AlreadyFired
             }
+            Some(NoAnswerTimerEntry::Canceled) => {
+                no_answer.insert(call_id.to_string(), NoAnswerTimerEntry::Canceled);
+                NoAnswerTimerCancel::Canceled
+            }
             None => NoAnswerTimerCancel::NotFound,
+        }
+    }
+
+    pub async fn cancel_no_answer_timer_for_caller_cancel(
+        &self,
+        call_id: &str,
+    ) -> NoAnswerTimerCancel {
+        let mut no_answer = self.no_answer.lock().await;
+        if mark_fired_no_answer_timer_canceled(&mut no_answer, call_id) {
+            debug!(
+                "Marked fired voicemail no-answer timer canceled for {}",
+                call_id
+            );
+            return NoAnswerTimerCancel::Canceled;
+        }
+
+        match no_answer.remove(call_id) {
+            Some(NoAnswerTimerEntry::Ringing(handle)) => {
+                handle.abort();
+                debug!("Cancelled voicemail no-answer timer for {}", call_id);
+                NoAnswerTimerCancel::Canceled
+            }
+            Some(NoAnswerTimerEntry::Canceled) => {
+                no_answer.insert(call_id.to_string(), NoAnswerTimerEntry::Canceled);
+                NoAnswerTimerCancel::Canceled
+            }
+            None => NoAnswerTimerCancel::NotFound,
+            Some(NoAnswerTimerEntry::Firing) => unreachable!("firing state handled above"),
         }
     }
 
@@ -577,6 +612,18 @@ impl Voicemail {
             media_relay.remove_session(&timer_call_id).await;
             webrtc_gateway.remove_session(&timer_call_id).await;
 
+            if !voicemail
+                .no_answer_timer_should_continue(&timer_call_id)
+                .await
+            {
+                debug!(
+                    "Suppressing no-answer voicemail setup for canceled call {}",
+                    timer_call_id
+                );
+                voicemail.finish_no_answer_timer(&timer_call_id).await;
+                return;
+            }
+
             let response = match voicemail.handle_delivery_invite(&msg, src, &callee).await {
                 Ok(response) => response,
                 Err(e) => {
@@ -588,6 +635,21 @@ impl Voicemail {
                 }
             };
 
+            if !voicemail
+                .no_answer_timer_should_continue(&timer_call_id)
+                .await
+            {
+                debug!(
+                    "Suppressing no-answer voicemail response for canceled call {}",
+                    timer_call_id
+                );
+                voicemail
+                    .cleanup_suppressed_no_answer_delivery(&timer_call_id)
+                    .await;
+                voicemail.finish_no_answer_timer(&timer_call_id).await;
+                return;
+            }
+
             if !transport_registry.send(src, response.clone())
                 && let Err(e) = socket.send_to(response.as_bytes(), src).await
             {
@@ -597,7 +659,7 @@ impl Voicemail {
                 );
             }
 
-            let _ = voicemail.cancel_no_answer_timer(&timer_call_id).await;
+            voicemail.finish_no_answer_timer(&timer_call_id).await;
         });
 
         if let Some(old) = self
@@ -616,6 +678,26 @@ impl Voicemail {
         } else {
             debug!("Started voicemail no-answer timer for {}", call_id);
         }
+    }
+
+    async fn no_answer_timer_should_continue(&self, call_id: &str) -> bool {
+        let no_answer = self.no_answer.lock().await;
+        no_answer_timer_should_continue(&no_answer, call_id)
+    }
+
+    async fn finish_no_answer_timer(&self, call_id: &str) {
+        self.no_answer.lock().await.remove(call_id);
+    }
+
+    async fn cleanup_suppressed_no_answer_delivery(&self, call_id: &str) {
+        if mark_recording_canceled(call_id, &self.recording_state).await {
+            debug!(
+                "Voicemail recording marked canceled after suppressed no-answer delivery for {}",
+                call_id
+            );
+        }
+        self.active.lock().await.remove(call_id);
+        self.media.remove(call_id).await;
     }
 
     pub async fn reconcile_on_startup(&self) -> Result<()> {
@@ -805,11 +887,30 @@ fn claim_no_answer_timer_to_fire(
     call_id: &str,
 ) -> bool {
     if matches!(timers.get(call_id), Some(NoAnswerTimerEntry::Ringing(_))) {
-        timers.insert(call_id.to_string(), NoAnswerTimerEntry::Fired);
+        timers.insert(call_id.to_string(), NoAnswerTimerEntry::Firing);
         true
     } else {
         false
     }
+}
+
+fn mark_fired_no_answer_timer_canceled(
+    timers: &mut HashMap<String, NoAnswerTimerEntry>,
+    call_id: &str,
+) -> bool {
+    if matches!(timers.get(call_id), Some(NoAnswerTimerEntry::Firing)) {
+        timers.insert(call_id.to_string(), NoAnswerTimerEntry::Canceled);
+        true
+    } else {
+        false
+    }
+}
+
+fn no_answer_timer_should_continue(
+    timers: &HashMap<String, NoAnswerTimerEntry>,
+    call_id: &str,
+) -> bool {
+    matches!(timers.get(call_id), Some(NoAnswerTimerEntry::Firing))
 }
 
 fn with_to_tag(to: &str, tag: &str) -> String {
@@ -1066,9 +1167,24 @@ mod tests {
         assert!(claim_no_answer_timer_to_fire(&mut timers, "call-123"));
         assert!(matches!(
             timers.get("call-123"),
-            Some(NoAnswerTimerEntry::Fired)
+            Some(NoAnswerTimerEntry::Firing)
         ));
         assert!(!claim_no_answer_timer_to_fire(&mut timers, "call-123"));
+    }
+
+    #[tokio::test]
+    async fn caller_cancel_after_no_answer_fire_blocks_delivery() {
+        let mut timers = HashMap::from([(
+            "call-123".to_string(),
+            NoAnswerTimerEntry::Ringing(tokio::spawn(async {})),
+        )]);
+
+        assert!(claim_no_answer_timer_to_fire(&mut timers, "call-123"));
+        assert!(no_answer_timer_should_continue(&timers, "call-123"));
+
+        assert!(mark_fired_no_answer_timer_canceled(&mut timers, "call-123"));
+
+        assert!(!no_answer_timer_should_continue(&timers, "call-123"));
     }
 
     #[test]
