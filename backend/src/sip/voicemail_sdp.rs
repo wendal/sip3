@@ -133,15 +133,11 @@ pub fn negotiate_offer(sdp: &str) -> Result<VoicemailNegotiation> {
             Some(("PCMU", 8000)) => {
                 pcmu_candidate = Some(*pt);
             }
-            Some(("PCMA", 8000)) => {
-                if pcma_candidate.is_none() {
-                    pcma_candidate = Some(*pt);
-                }
+            Some(("PCMA", 8000)) if pcma_candidate.is_none() => {
+                pcma_candidate = Some(*pt);
             }
-            Some(("telephone-event", 8000)) => {
-                if telephone_event_pt.is_none() {
-                    telephone_event_pt = Some(*pt);
-                }
+            Some(("telephone-event", 8000)) if telephone_event_pt.is_none() => {
+                telephone_event_pt = Some(*pt);
             }
             _ => {}
         }
