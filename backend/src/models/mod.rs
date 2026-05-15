@@ -4,6 +4,7 @@ pub mod admin_user;
 pub mod conference;
 pub mod message;
 pub mod security;
+pub mod voicemail;
 
 pub use account::{Account, Call, CreateAccount, Registration, UpdateAccount};
 pub use acl::{AclEntry, CreateAclEntry, UpdateAclEntry};
@@ -14,3 +15,7 @@ pub use conference::{
 };
 pub use message::SipMessageRecord;
 pub use security::{AutoBlockEntry, SecurityEvent, UnblockRequest};
+pub use voicemail::{
+    CreateVoicemailBox, UpdateVoicemailBox, UpdateVoicemailMessage, VoicemailBox,
+    VoicemailBoxSummary, VoicemailMessage, validate_box_limits, validate_voicemail_status,
+};

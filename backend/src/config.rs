@@ -45,6 +45,14 @@ pub struct ServerConfig {
     pub ws_port: u16,
     /// Secure WebSocket SIP port (wss://). Requires tls_cert+tls_key. Default 5443, 0 = disabled.
     pub wss_port: u16,
+    pub voicemail_access_extension: String,
+    pub voicemail_no_answer_secs: u64,
+    pub voicemail_max_message_secs: u64,
+    pub voicemail_idle_timeout_secs: u64,
+    pub voicemail_storage_dir: String,
+    pub voicemail_prompt_dir: String,
+    pub voicemail_rtp_port_min: u16,
+    pub voicemail_rtp_port_max: u16,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -139,6 +147,14 @@ impl Config {
             .set_default("server.tls_key", "")?
             .set_default("server.ws_port", 5080)?
             .set_default("server.wss_port", 5443)?
+            .set_default("server.voicemail_access_extension", "*97")?
+            .set_default("server.voicemail_no_answer_secs", 25)?
+            .set_default("server.voicemail_max_message_secs", 120)?
+            .set_default("server.voicemail_idle_timeout_secs", 10)?
+            .set_default("server.voicemail_storage_dir", "voicemail")?
+            .set_default("server.voicemail_prompt_dir", "voicemail/prompts")?
+            .set_default("server.voicemail_rtp_port_min", 10200)?
+            .set_default("server.voicemail_rtp_port_max", 10299)?
             .set_default("database.url", "mysql://root:root@localhost:3306/sip3")?
             .set_default("database.max_connections", 10)?
             .set_default("auth.realm", "sip.air32.cn")?
