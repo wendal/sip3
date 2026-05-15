@@ -6,15 +6,15 @@ mod tests {
     use sip3_backend::api::accounts::validate_sip_username;
     use sip3_backend::security_guard::{AuthSurface, GuardLimits, SecurityGuard};
     use sip3_backend::sip::handler::{
-        extract_uri, md5_hex, normalize_header_name, parse_auth_params, strip_proxy_via,
-        uri_username, SipMessage, SIP_ALLOW_METHODS,
+        SIP_ALLOW_METHODS, SipMessage, extract_uri, md5_hex, normalize_header_name,
+        parse_auth_params, strip_proxy_via, uri_username,
     };
     use sip3_backend::sip::media::{rewrite_sdp, sdp_audio_port, sdp_has_crypto};
     use sip3_backend::sip::proxy::{
-        should_preserve_webrtc_sdp_for_target, CALLER_ACCOUNT_EXISTS_SQL,
-        MESSAGE_SENDER_ACCOUNT_EXISTS_SQL,
+        CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL,
+        should_bridge_plain_sip_to_websocket_target, should_preserve_webrtc_sdp_for_target,
     };
-    use sip3_backend::sip::registrar::{generate_nonce, validate_nonce, ACCOUNT_LOOKUP_SQL};
+    use sip3_backend::sip::registrar::{ACCOUNT_LOOKUP_SQL, generate_nonce, validate_nonce};
     use sip3_backend::sip::transport::TransportRegistry;
 
     // ── SipMessage::parse ────────────────────────────────────────────────────
@@ -285,6 +285,33 @@ mod tests {
         assert!(!should_preserve_webrtc_sdp_for_target(
             "sip:1001@192.0.2.10:5060",
             webrtc_sdp
+        ));
+    }
+
+    #[test]
+    fn test_websocket_callee_with_plain_sdp_requires_reverse_bridge() {
+        let plain_sdp = "v=0\r\n\
+                         o=alice 123 1 IN IP4 192.0.2.10\r\n\
+                         s=-\r\n\
+                         c=IN IP4 192.0.2.10\r\n\
+                         t=0 0\r\n\
+                         m=audio 49170 RTP/AVP 0 8\r\n";
+        let webrtc_sdp = "v=0\r\n\
+                          m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+                          a=ice-ufrag:abc\r\n\
+                          a=fingerprint:sha-256 ABCD\r\n";
+
+        assert!(should_bridge_plain_sip_to_websocket_target(
+            "sip:abc@example.invalid;transport=ws",
+            plain_sdp
+        ));
+        assert!(!should_bridge_plain_sip_to_websocket_target(
+            "sip:abc@example.invalid;transport=ws",
+            webrtc_sdp
+        ));
+        assert!(!should_bridge_plain_sip_to_websocket_target(
+            "sip:1001@192.0.2.10:5060",
+            plain_sdp
         ));
     }
 

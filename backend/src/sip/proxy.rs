@@ -7,10 +7,10 @@ use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
 use super::handler::{
-    base_response, extract_uri, uri_username, ActiveDialogs, DialogInfo, DialogStores,
-    PendingDialogs, SipMessage,
+    ActiveDialogs, DialogInfo, DialogStores, PendingDialogs, SipMessage, base_response,
+    extract_uri, uri_username,
 };
-use super::media::{is_webrtc_sdp, make_plain_rtp_sdp, rewrite_sdp, MediaRelay};
+use super::media::{MediaRelay, is_webrtc_sdp, make_plain_rtp_sdp, rewrite_sdp, sdp_rtp_addr};
 use super::transport::TransportRegistry;
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
@@ -29,6 +29,10 @@ pub fn is_websocket_contact_uri(contact_uri: &str) -> bool {
 
 pub fn should_preserve_webrtc_sdp_for_target(contact_uri: &str, body: &str) -> bool {
     is_websocket_contact_uri(contact_uri) && is_webrtc_sdp(body)
+}
+
+pub fn should_bridge_plain_sip_to_websocket_target(contact_uri: &str, body: &str) -> bool {
+    is_websocket_contact_uri(contact_uri) && !body.is_empty() && !is_webrtc_sdp(body)
 }
 
 #[derive(Clone)]
@@ -166,6 +170,34 @@ impl Proxy {
         // Allocate media for this call: WebRTC INVITE or plain SIP.
         let rewritten_body = if should_preserve_webrtc_sdp_for_target(&contact_uri, &msg.body) {
             None
+        } else if callee_is_stream
+            && should_bridge_plain_sip_to_websocket_target(&contact_uri, &msg.body)
+        {
+            // SIP-phone-originated INVITE to browser callee:
+            // create reverse WebRTC bridge and send browser-compatible offer.
+            match self
+                .webrtc_gateway
+                .create_session_for_sip_caller(call_id.clone())
+                .await
+            {
+                Ok((webrtc_offer_sdp, sip_port)) => {
+                    if let Some(sip_addr) = sdp_rtp_addr(&msg.body) {
+                        self.webrtc_gateway.set_sip_peer(&call_id, sip_addr).await;
+                    }
+                    info!(
+                        "Reverse WebRTC session for {}: forwarding browser offer (sip port {})",
+                        call_id, sip_port
+                    );
+                    Some(webrtc_offer_sdp)
+                }
+                Err(e) => {
+                    warn!(
+                        "Reverse WebRTC session creation failed for {}: {}",
+                        call_id, e
+                    );
+                    None
+                }
+            }
         } else if !msg.body.is_empty() && is_webrtc_sdp(&msg.body) {
             // Browser-originated WebRTC INVITE: create a WebRTC session and
             // replace the WebRTC SDP with a plain RTP offer for the SIP phone.
@@ -361,10 +393,11 @@ impl Proxy {
                 .flatten();
 
                 if let Some((ip, port)) = row
-                    && let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                        let _ = self.send_sip(msg.raw.clone(), target).await;
-                        info!("Forwarded ACK (fallback) to {} at {}", callee, target);
-                    }
+                    && let Ok(target) = format!("{}:{}", ip, port).parse::<SocketAddr>()
+                {
+                    let _ = self.send_sip(msg.raw.clone(), target).await;
+                    info!("Forwarded ACK (fallback) to {} at {}", callee, target);
+                }
             }
         }
 
@@ -421,10 +454,11 @@ impl Proxy {
                 .flatten();
 
                 if let Some((ip, port)) = row
-                    && let Ok(fallback) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                        let _ = self.send_sip(msg.raw.clone(), fallback).await;
-                        info!("Forwarded BYE (fallback) to {} at {}", callee, fallback);
-                    }
+                    && let Ok(fallback) = format!("{}:{}", ip, port).parse::<SocketAddr>()
+                {
+                    let _ = self.send_sip(msg.raw.clone(), fallback).await;
+                    info!("Forwarded BYE (fallback) to {} at {}", callee, fallback);
+                }
             }
         }
 
