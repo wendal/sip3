@@ -19,6 +19,9 @@ pub struct VoicemailBox {
     pub updated_at: NaiveDateTime,
 }
 
+/// Summary of a voicemail box with aggregate message counts.
+/// Used for queries that JOIN and COUNT messages grouped by status,
+/// not plain `SELECT *` from sip_voicemail_boxes.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct VoicemailBoxSummary {
     pub id: u64,
@@ -110,6 +113,8 @@ mod tests {
     #[test]
     fn validates_box_limits() {
         assert!(validate_box_limits(25, 120, 100).is_ok());
+        assert!(validate_box_limits(1, 1, 1).is_ok());
+        assert!(validate_box_limits(600, 3600, 10_000).is_ok());
         assert!(validate_box_limits(0, 120, 100).is_err());
         assert!(validate_box_limits(25, 0, 100).is_err());
         assert!(validate_box_limits(25, 120, 0).is_err());

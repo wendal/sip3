@@ -46,9 +46,9 @@ pub struct ServerConfig {
     /// Secure WebSocket SIP port (wss://). Requires tls_cert+tls_key. Default 5443, 0 = disabled.
     pub wss_port: u16,
     pub voicemail_access_extension: String,
-    pub voicemail_no_answer_secs: u64,
-    pub voicemail_max_message_secs: u64,
-    pub voicemail_idle_timeout_secs: u64,
+    pub voicemail_no_answer_secs: u32,
+    pub voicemail_max_message_secs: u32,
+    pub voicemail_idle_timeout_secs: u32,
     pub voicemail_storage_dir: String,
     pub voicemail_prompt_dir: String,
     pub voicemail_rtp_port_min: u16,
