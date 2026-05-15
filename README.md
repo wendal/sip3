@@ -35,8 +35,8 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 - ✅ **SIP/WSS** — port 5443 (WebSocket Secure, reuses TLS cert)
 
 #### Media
-- ✅ **Server-side RTP relay** — NAT traversal without client STUN/TURN
-- ✅ **SRTP transparent relay** — SDES/SAVP passthrough (end-to-end encryption)
+- ✅ **Server-side RTP relay** — NAT traversal for SIP phone audio and video without client STUN/TURN
+- ✅ **SRTP transparent relay** — SDES/SAVP audio/video passthrough (end-to-end encryption)
 - ✅ **WebRTC media gateway** — bridges browser ICE/DTLS-SRTP ↔ plain SIP phone RTP
 - ✅ **TURN credentials API** — coturn HMAC-SHA1 time-limited credentials
 
@@ -199,6 +199,7 @@ npm run dev         # dev server on :5173
 
 - **No ringing / MESSAGE not delivered**: check `sip_registrations.source_ip/source_port` against the sender's real source socket.
 - **Call connected but no audio**: verify UDP RTP range (`10000-10099`) is open and relay ports in SDP match packet source ports.
+- **Linphone video does not appear**: verify both offer and answer SDP rewrite `m=video` to the SIP3 public IP and a relay port. A SIP audio+video call consumes four RTP relay ports, so the default range supports fewer concurrent video calls than audio-only calls. Browser WebRTC video is not covered by the legacy SIP RTP relay path.
 - **MESSAGE persistence errors (1146)**: ensure migration `010_sip_messages.sql` has been applied.
 
 See [docs/deployment.md](docs/deployment.md) for full deployment and TLS setup guide.
@@ -229,8 +230,8 @@ SIP3 是一个功能完整的 SIP 代理/注册服务器，使用 Rust 构建后
 - ✅ **SIP/WSS** — 5443 端口（WebSocket + TLS）
 
 #### 媒体
-- ✅ **服务端 RTP 中继** — NAT 穿透，客户端无需 STUN/TURN
-- ✅ **SRTP 透明中继** — SDES/SAVP 直通，端到端加密
+- ✅ **服务端 RTP 中继** — SIP 电话音频和视频 NAT 穿透，客户端无需 STUN/TURN
+- ✅ **SRTP 透明中继** — SDES/SAVP 音视频直通，端到端加密
 - ✅ **WebRTC 媒体网关** — 浏览器 ICE/DTLS-SRTP ↔ 传统 SIP 电话 RTP 互通
 - ✅ **TURN 凭证 API** — coturn HMAC-SHA1 时效凭证，浏览器端自动获取
 
@@ -333,6 +334,7 @@ npm run dev         # 开发服务器 :5173
 
 - **不响铃 / MESSAGE 收不到**：优先核对 `sip_registrations` 中 `source_ip/source_port` 是否与实时来包一致。
 - **接通无声音**：确认 UDP `10000-10099` 已放行，并核对 SDP 中继端口与实际 RTP 源端口一致。
+- **Linphone 视频无画面**：确认 INVITE 和 200 OK 的 SDP 都把 `m=video` 改写到 SIP3 公网 IP 和中继端口。SIP 音视频通话每路会占用 4 个 RTP 中继端口，因此默认端口范围支持的并发视频通话少于纯音频通话。浏览器 WebRTC 视频不属于传统 SIP RTP 中继路径。
 - **MESSAGE 入库报 1146**：确认已执行迁移 `010_sip_messages.sql`。
 
 > **重要**：`SIP3__SERVER__PUBLIC_IP` 建议配置为公网 **数字 IPv4**（例如 `154.8.159.79`），避免终端因 SDP 中使用域名导致兼容问题。

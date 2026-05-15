@@ -105,14 +105,14 @@ npx serve dist -p 80
 SIP3 includes a built-in server-side RTP relay so clients **do not need STUN or TURN**.
 When an INVITE is proxied, the server:
 
-1. Allocates a pair of UDP ports from the configured `rtp_port_min`–`rtp_port_max` range.
-2. Rewrites the SDP `c=` and `m=audio` fields in the INVITE to point to the server.
+1. Allocates a pair of UDP ports for each active `m=audio` and `m=video` SDP section from the configured `rtp_port_min`–`rtp_port_max` range.
+2. Rewrites the SDP `c=`, `m=audio`, and `m=video` fields in the INVITE to point to the server.
 3. When the 200 OK arrives from the callee, rewrites its SDP the same way.
 4. Learns each peer's real public RTP address from the first packet received
    (symmetric RTP – no SDP address trust required).
-5. Bidirectionally forwards RTP between the two peers.
+5. Bidirectionally forwards RTP/SRTP bytes between the two peers without transcoding.
 
-This means clients behind NAT with no fixed public IP can call each other normally.
+This means clients behind NAT with no fixed public IP can call each other normally. A pure audio call consumes two relay ports; an audio+video SIP phone call consumes four. Keep Docker port ranges modest for startup performance, but size `rtp_port_min`–`rtp_port_max` for the expected concurrent video calls. Browser WebRTC video is separate from this legacy SIP RTP relay path.
 
 ## SIP Client Configuration
 
@@ -204,6 +204,12 @@ TCP 3306         - MySQL (internal only)
 - Verify UDP ports 10000–10099 are open and forwarded to the server
 - Verify `server.public_ip` is the actual public IP address visible to clients
 - Check server logs for "Allocated media relay" and "RTP relay" messages
+
+### No video in Linphone after call connects
+- Verify UDP ports 10000–10099 are open and forwarded to the server
+- Confirm the INVITE offer and 200 OK answer both rewrite `m=video` to `server.public_ip` and a SIP3 relay port
+- Remember that one audio+video SIP call uses four RTP relay ports, so port exhaustion appears sooner than with audio-only calls
+- Browser WebRTC video is not handled by the legacy SIP RTP relay; it needs separate WebRTC gateway support
 
 ### Database connection fails
 - Check `DATABASE_URL` is correct

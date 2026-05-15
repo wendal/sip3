@@ -10,7 +10,10 @@ use super::handler::{
     ActiveDialogs, DialogInfo, DialogStores, PendingDialogs, SipMessage, base_response,
     extract_uri, md5_hex, uri_username,
 };
-use super::media::{MediaRelay, is_webrtc_sdp, make_plain_rtp_sdp, rewrite_sdp, sdp_rtp_addr};
+use super::media::{
+    MediaRelay, is_webrtc_sdp, make_plain_rtp_sdp, parse_sdp_media_sections, rewrite_sdp_media,
+    sdp_rtp_addr,
+};
 use super::registrar::routable_contact_uri;
 use super::transport::TransportRegistry;
 use super::webrtc_gateway::WebRtcGateway;
@@ -322,19 +325,33 @@ impl Proxy {
                 }
             }
         } else {
-            // Legacy plain-RTP call: allocate a symmetric relay session.
-            match self.media_relay.allocate_session(call_id.clone()).await {
-                Ok((relay_port_a, _relay_port_b)) => {
-                    let public_ip = self.media_relay.public_ip.as_str();
-                    if msg.body.is_empty() {
-                        None
-                    } else {
-                        Some(rewrite_sdp(&msg.body, public_ip, relay_port_a))
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to allocate media relay for {}: {}", call_id, e);
+            // Legacy plain-RTP/SRTP call: allocate one symmetric relay stream
+            // for each active audio/video media section in the offer.
+            if msg.body.is_empty() {
+                None
+            } else {
+                let media = parse_sdp_media_sections(&msg.body);
+                if !media.iter().any(|m| m.active) {
                     None
+                } else {
+                    match self
+                        .media_relay
+                        .allocate_session_for_media(call_id.clone(), &media)
+                        .await
+                    {
+                        Ok(ports) => {
+                            let offer_ports: Vec<(usize, u16)> = ports
+                                .iter()
+                                .map(|p| (p.media_index, p.relay_port_a))
+                                .collect();
+                            let public_ip = self.media_relay.public_ip.as_str();
+                            Some(rewrite_sdp_media(&msg.body, public_ip, &offer_ports))
+                        }
+                        Err(e) => {
+                            warn!("Failed to allocate media relay for {}: {}", call_id, e);
+                            None
+                        }
+                    }
                 }
             }
         };

@@ -11,30 +11,100 @@ use tracing::{debug, warn};
 /// Maximum size of a single RTP datagram.
 const RTP_BUF_SIZE: usize = 8192;
 
-/// Per-call RTP relay state.
-pub struct MediaSession {
+/// SDP media types that the RTP relay can transparently forward.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum SdpMediaKind {
+    Audio,
+    Video,
+}
+
+/// A supported SDP media section (`m=audio` or `m=video`) in offer/answer order.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SdpMediaDescriptor {
+    pub kind: SdpMediaKind,
+    /// Zero-based index among all SDP `m=` sections, including unsupported media.
+    pub media_index: usize,
+    pub port: u16,
+    pub active: bool,
+}
+
+/// Relay ports assigned for one SDP media section.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct MediaRelayPorts {
+    pub kind: SdpMediaKind,
+    pub media_index: usize,
+    /// UDP port that the callee should send RTP to. Server relays -> caller.
+    pub relay_port_a: u16,
+    /// UDP port that the caller should send RTP to. Server relays -> callee.
+    pub relay_port_b: u16,
+}
+
+/// RTP relay state for one SDP media section.
+pub struct MediaStreamSession {
+    pub kind: SdpMediaKind,
+    pub media_index: usize,
     /// Actual RTP source address learned from the first packet arriving on relay_a
     /// (i.e. the callee's real public RTP address after NAT).
     pub callee_rtp: Arc<Mutex<Option<SocketAddr>>>,
     /// Actual RTP source address learned from the first packet arriving on relay_b
     /// (i.e. the caller's real public RTP address after NAT).
     pub caller_rtp: Arc<Mutex<Option<SocketAddr>>>,
-    /// UDP port that the callee should send RTP to. Server relays → caller.
+    /// UDP port that the callee should send RTP to. Server relays -> caller.
     pub relay_port_a: u16,
-    /// UDP port that the caller should send RTP to. Server relays → callee.
+    /// UDP port that the caller should send RTP to. Server relays -> callee.
     pub relay_port_b: u16,
+    /// Background task forwarding callee->caller.
+    task_a: JoinHandle<()>,
+    /// Background task forwarding caller->callee.
+    task_b: JoinHandle<()>,
+}
+
+impl MediaStreamSession {
+    fn abort(&self) {
+        self.task_a.abort();
+        self.task_b.abort();
+    }
+
+    fn ports(&self) -> MediaRelayPorts {
+        MediaRelayPorts {
+            kind: self.kind,
+            media_index: self.media_index,
+            relay_port_a: self.relay_port_a,
+            relay_port_b: self.relay_port_b,
+        }
+    }
+}
+
+/// Per-call RTP relay state.
+pub struct MediaSession {
+    pub streams: Vec<MediaStreamSession>,
     /// When this session was created; used for stale-session cleanup.
     pub created_at: std::time::Instant,
-    /// Background task forwarding callee→caller.
-    task_a: JoinHandle<()>,
-    /// Background task forwarding caller→callee.
-    task_b: JoinHandle<()>,
 }
 
 impl MediaSession {
     fn abort(&self) {
-        self.task_a.abort();
-        self.task_b.abort();
+        for stream in &self.streams {
+            stream.abort();
+        }
+    }
+
+    pub fn first_ports(&self) -> Option<MediaRelayPorts> {
+        self.streams.first().map(MediaStreamSession::ports)
+    }
+
+    pub fn callee_sdp_ports(&self) -> Vec<(usize, u16)> {
+        self.streams
+            .iter()
+            .map(|stream| (stream.media_index, stream.relay_port_a))
+            .collect()
+    }
+
+    pub fn caller_sdp_ports(&self) -> Vec<(usize, u16)> {
+        self.streams
+            .iter()
+            .map(|stream| (stream.media_index, stream.relay_port_b))
+            .collect()
     }
 }
 
@@ -68,11 +138,61 @@ impl MediaRelay {
         }
     }
 
-    /// Allocate a relay session for `call_id` and start background forwarding tasks.
+    /// Allocate a single-audio relay session for `call_id`.
     ///
     /// Returns `(relay_port_a, relay_port_b)` to be written into the SDP offered to
     /// the callee (relay_a) and later to the caller (relay_b).
     pub async fn allocate_session(&self, call_id: String) -> Result<(u16, u16)> {
+        let media = [SdpMediaDescriptor {
+            kind: SdpMediaKind::Audio,
+            media_index: 0,
+            port: 0,
+            active: true,
+        }];
+        let ports = self.allocate_session_for_media(call_id, &media).await?;
+        let first = ports
+            .first()
+            .ok_or_else(|| anyhow!("No relay ports allocated for media session"))?;
+        Ok((first.relay_port_a, first.relay_port_b))
+    }
+
+    /// Allocate relay streams for every active supported SDP media section.
+    pub async fn allocate_session_for_media(
+        &self,
+        call_id: String,
+        media: &[SdpMediaDescriptor],
+    ) -> Result<Vec<MediaRelayPorts>> {
+        let active_media: Vec<SdpMediaDescriptor> =
+            media.iter().copied().filter(|m| m.active).collect();
+        if active_media.is_empty() {
+            return Err(anyhow!("No active RTP media sections to relay"));
+        }
+
+        let mut streams = Vec::with_capacity(active_media.len());
+        for descriptor in active_media {
+            match self.allocate_stream(descriptor).await {
+                Ok(stream) => streams.push(stream),
+                Err(e) => {
+                    for stream in &streams {
+                        stream.abort();
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        let ports: Vec<MediaRelayPorts> = streams.iter().map(MediaStreamSession::ports).collect();
+        let session = MediaSession {
+            streams,
+            created_at: std::time::Instant::now(),
+        };
+
+        self.sessions.lock().await.insert(call_id.clone(), session);
+        debug!("Allocated media relay for {}: {:?}", call_id, ports);
+        Ok(ports)
+    }
+
+    async fn allocate_stream(&self, descriptor: SdpMediaDescriptor) -> Result<MediaStreamSession> {
         let (sock_a, sock_b) = self.bind_port_pair().await?;
         let relay_port_a = sock_a.local_addr()?.port();
         let relay_port_b = sock_b.local_addr()?.port();
@@ -105,22 +225,16 @@ impl MediaRelay {
             run_relay_loop(recv_b, send_a, caller_rtp_b, callee_rtp_b).await;
         });
 
-        let session = MediaSession {
+        Ok(MediaStreamSession {
+            kind: descriptor.kind,
+            media_index: descriptor.media_index,
             callee_rtp,
             caller_rtp,
             relay_port_a,
             relay_port_b,
-            created_at: std::time::Instant::now(),
             task_a,
             task_b,
-        };
-
-        self.sessions.lock().await.insert(call_id.clone(), session);
-        debug!(
-            "Allocated media relay for {}: relay_a={} relay_b={}",
-            call_id, relay_port_a, relay_port_b
-        );
-        Ok((relay_port_a, relay_port_b))
+        })
     }
 
     /// Remove the session and stop its relay tasks.
@@ -217,6 +331,129 @@ async fn run_relay_loop(
 
 // ─── SDP helpers ────────────────────────────────────────────────────────────
 
+/// Return supported SDP media sections (`m=audio`, `m=video`) in media order.
+pub fn parse_sdp_media_sections(sdp: &str) -> Vec<SdpMediaDescriptor> {
+    let mut media = Vec::new();
+    let mut media_index = 0usize;
+
+    for line in sdp.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("m=") {
+            continue;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let Some(media_token) = parts.next() else {
+            media_index += 1;
+            continue;
+        };
+        let Some(port_token) = parts.next() else {
+            media_index += 1;
+            continue;
+        };
+
+        let kind = match media_token.strip_prefix("m=") {
+            Some("audio") => Some(SdpMediaKind::Audio),
+            Some("video") => Some(SdpMediaKind::Video),
+            _ => None,
+        };
+
+        if let Some(kind) = kind
+            && let Some(port) = sdp_media_port(port_token)
+        {
+            media.push(SdpMediaDescriptor {
+                kind,
+                media_index,
+                port,
+                active: port != 0,
+            });
+        }
+
+        media_index += 1;
+    }
+
+    media
+}
+
+fn sdp_media_port(port_token: &str) -> Option<u16> {
+    port_token.split('/').next()?.parse().ok()
+}
+
+/// Rewrite a SDP body using relay ports keyed by zero-based SDP media index.
+pub fn rewrite_sdp_media(sdp: &str, new_ip: &str, media_ports: &[(usize, u16)]) -> String {
+    let port_by_media: HashMap<usize, u16> = media_ports.iter().copied().collect();
+    let has_unsupported_media = sdp.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("m=")
+            && !trimmed.starts_with("m=audio ")
+            && !trimmed.starts_with("m=audio\t")
+            && !trimmed.starts_with("m=video ")
+            && !trimmed.starts_with("m=video\t")
+    });
+    let media_sections_with_c = sdp_media_sections_with_connection(sdp);
+
+    let mut out = Vec::new();
+    let mut current_media_index: Option<usize> = None;
+    let mut next_media_index = 0usize;
+
+    for line in sdp.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("m=") {
+            let media_index = next_media_index;
+            next_media_index += 1;
+            current_media_index = Some(media_index);
+
+            if let Some(new_port) = port_by_media.get(&media_index)
+                && sdp_m_line_port(line).is_some_and(|port| port != 0)
+            {
+                out.push(rewrite_m_port(line, *new_port));
+                if has_unsupported_media && !media_sections_with_c.contains_key(&media_index) {
+                    out.push(format!("c=IN IP4 {}", new_ip));
+                }
+                continue;
+            }
+        } else if trimmed.starts_with("c=IN IP4 ") {
+            if !has_unsupported_media {
+                out.push(format!("c=IN IP4 {}", new_ip));
+                continue;
+            }
+            if current_media_index.is_some_and(|idx| port_by_media.contains_key(&idx)) {
+                out.push(format!("c=IN IP4 {}", new_ip));
+                continue;
+            }
+        }
+
+        out.push(line.to_string());
+    }
+
+    out.join("\r\n")
+}
+
+fn sdp_media_sections_with_connection(sdp: &str) -> HashMap<usize, ()> {
+    let mut media_with_c = HashMap::new();
+    let mut current_media_index: Option<usize> = None;
+    let mut next_media_index = 0usize;
+
+    for line in sdp.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("m=") {
+            current_media_index = Some(next_media_index);
+            next_media_index += 1;
+        } else if trimmed.starts_with("c=IN IP4 ")
+            && let Some(media_index) = current_media_index
+        {
+            media_with_c.insert(media_index, ());
+        }
+    }
+
+    media_with_c
+}
+
+fn sdp_m_line_port(line: &str) -> Option<u16> {
+    let port_token = line.split_whitespace().nth(1)?;
+    sdp_media_port(port_token)
+}
+
 /// Rewrite a SDP body, replacing the connection address and the port of the
 /// first active audio media stream with the supplied server values.
 ///
@@ -228,33 +465,14 @@ async fn run_relay_loop(
 /// Multiple media sections: only the first `m=audio` (or `m=audio`-compatible)
 /// stream is touched; subsequent ones are passed through unchanged.
 pub fn rewrite_sdp(sdp: &str, new_ip: &str, new_port: u16) -> String {
-    let mut out = Vec::new();
-    let mut in_audio_section = false;
-    let mut port_done = false;
-    let mut audio_section_found = false;
-
-    for line in sdp.lines() {
-        if line.starts_with("m=") {
-            // Entering a new media section.
-            in_audio_section = false;
-            if !port_done && (line.starts_with("m=audio ") || line.starts_with("m=audio\t")) {
-                in_audio_section = true;
-                audio_section_found = true;
-                out.push(rewrite_m_port(line, new_port));
-                port_done = true;
-                continue;
-            }
-        } else if line.starts_with("c=IN IP4 ") {
-            // Rewrite connection line at session level, or inside the audio section
-            // before we've already rewritten it, or if no audio-level c= exists.
-            if !audio_section_found || in_audio_section {
-                out.push(format!("c=IN IP4 {}", new_ip));
-                continue;
-            }
-        }
-        out.push(line.to_string());
+    let media_index = parse_sdp_media_sections(sdp)
+        .into_iter()
+        .find(|m| m.kind == SdpMediaKind::Audio && m.active)
+        .map(|m| m.media_index);
+    match media_index {
+        Some(media_index) => rewrite_sdp_media(sdp, new_ip, &[(media_index, new_port)]),
+        None => rewrite_sdp_media(sdp, new_ip, &[]),
     }
-    out.join("\r\n")
 }
 
 /// Replace the port field in a SDP `m=` line.

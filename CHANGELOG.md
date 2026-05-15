@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+- Added legacy SIP phone audio+video RTP/SRTP relay support by rewriting and relaying active `m=audio` and `m=video` SDP sections.
+
 ## [v1.2.0] - 2026-05-15
 
 ### Added
@@ -22,4 +27,3 @@ All notable changes to this project are documented in this file.
 - Fixed MESSAGE persistence failure when database schema was incomplete.
 - Fixed NAT source-port drift routing issues by refreshing sender registration source port on authenticated traffic.
 - Fixed no-audio calls caused by RTP packets being sent from the wrong relay source port.
-

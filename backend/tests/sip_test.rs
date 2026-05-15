@@ -10,7 +10,10 @@ mod tests {
         SIP_ALLOW_METHODS, SipMessage, extract_uri, md5_hex, normalize_header_name,
         parse_auth_params, strip_proxy_via, uri_username,
     };
-    use sip3_backend::sip::media::{MediaRelay, rewrite_sdp, sdp_audio_port, sdp_has_crypto};
+    use sip3_backend::sip::media::{
+        MediaRelay, SdpMediaKind, parse_sdp_media_sections, rewrite_sdp, rewrite_sdp_media,
+        sdp_audio_port, sdp_has_crypto,
+    };
     use sip3_backend::sip::proxy::{
         CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL,
         build_forwarded_cancel_for_target, build_forwarded_invite_for_target,
@@ -544,6 +547,161 @@ mod tests {
         relay.remove_session(&call_id).await;
     }
 
+    #[tokio::test]
+    async fn test_media_relay_allocates_audio_and_video_streams() {
+        let relay = MediaRelay::new("127.0.0.1".to_string(), 31110, 31130);
+        let call_id = format!("test-video-call-{}", std::process::id());
+        let media = parse_sdp_media_sections(
+            "m=audio 49170 RTP/AVP 0 8\r\n\
+             m=video 51372 RTP/AVP 96\r\n\
+             a=rtpmap:96 H264/90000\r\n",
+        );
+
+        let ports = relay
+            .allocate_session_for_media(call_id.clone(), &media)
+            .await
+            .expect("allocate audio+video relay session");
+
+        assert_eq!(ports.len(), 2);
+        let audio = ports
+            .iter()
+            .find(|p| p.kind == SdpMediaKind::Audio)
+            .expect("audio relay ports");
+        let video = ports
+            .iter()
+            .find(|p| p.kind == SdpMediaKind::Video)
+            .expect("video relay ports");
+        assert_ne!(audio.relay_port_a, video.relay_port_a);
+        assert_ne!(audio.relay_port_b, video.relay_port_b);
+
+        assert_relay_stream(
+            audio.relay_port_a,
+            audio.relay_port_b,
+            b"audio-to-caller",
+            b"audio-to-callee",
+            "audio",
+        )
+        .await;
+        assert_relay_stream(
+            video.relay_port_a,
+            video.relay_port_b,
+            b"video-to-caller",
+            b"video-to-callee",
+            "video",
+        )
+        .await;
+
+        relay.remove_session(&call_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_media_relay_cleanup_removes_audio_and_video_streams() {
+        let relay = MediaRelay::new("127.0.0.1".to_string(), 31140, 31160);
+        let call_id = format!("test-cleanup-call-{}", std::process::id());
+        let media = parse_sdp_media_sections(
+            "m=audio 49170 RTP/AVP 0 8\r\n\
+             m=video 51372 RTP/AVP 96\r\n",
+        );
+
+        relay
+            .allocate_session_for_media(call_id.clone(), &media)
+            .await
+            .expect("allocate audio+video relay session");
+        {
+            let mut sessions = relay.sessions.lock().await;
+            let session = sessions.get_mut(&call_id).expect("stored session");
+            assert_eq!(session.streams.len(), 2);
+            session.created_at = std::time::Instant::now() - Duration::from_secs(10);
+        }
+
+        relay.cleanup_stale_sessions(1).await;
+
+        assert!(!relay.sessions.lock().await.contains_key(&call_id));
+    }
+
+    #[tokio::test]
+    async fn test_media_relay_allocation_failure_does_not_store_session() {
+        let relay = MediaRelay::new("127.0.0.1".to_string(), 31170, 31171);
+        let call_id = format!("test-failed-allocation-{}", std::process::id());
+        let media = parse_sdp_media_sections(
+            "m=audio 49170 RTP/AVP 0 8\r\n\
+             m=video 51372 RTP/AVP 96\r\n",
+        );
+
+        let result = relay
+            .allocate_session_for_media(call_id.clone(), &media)
+            .await;
+
+        assert!(result.is_err());
+        assert!(!relay.sessions.lock().await.contains_key(&call_id));
+    }
+
+    async fn assert_relay_stream(
+        relay_a: u16,
+        relay_b: u16,
+        to_caller: &[u8],
+        to_callee: &[u8],
+        label: &str,
+    ) {
+        let caller = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind caller");
+        let callee = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind callee");
+
+        caller
+            .send_to(b"learn-caller", ("127.0.0.1", relay_b))
+            .await
+            .expect("caller learn send");
+        let mut caller_buf = [0u8; 256];
+        let (caller_len, caller_src) = {
+            let mut received = None;
+            for _ in 0..10 {
+                callee
+                    .send_to(to_caller, ("127.0.0.1", relay_a))
+                    .await
+                    .expect("callee send");
+                if let Ok(Ok(pair)) = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    caller.recv_from(&mut caller_buf),
+                )
+                .await
+                {
+                    received = Some(pair);
+                    break;
+                }
+            }
+            received.unwrap_or_else(|| panic!("{label} caller receive timeout"))
+        };
+        assert_eq!(&caller_buf[..caller_len], to_caller);
+        assert_eq!(caller_src.port(), relay_b);
+
+        let mut callee_buf = [0u8; 256];
+        let (callee_len, callee_src) = {
+            let mut received = None;
+            for _ in 0..20 {
+                caller
+                    .send_to(to_callee, ("127.0.0.1", relay_b))
+                    .await
+                    .expect("caller send");
+                if let Ok(Ok((len, src))) = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    callee.recv_from(&mut callee_buf),
+                )
+                .await
+                    && &callee_buf[..len] == to_callee
+                {
+                    received = Some((len, src));
+                    break;
+                }
+            }
+            received.unwrap_or_else(|| panic!("{label} callee receive timeout"))
+        };
+        assert_eq!(&callee_buf[..callee_len], to_callee);
+        assert_eq!(callee_src.port(), relay_a);
+    }
+
     #[test]
     fn test_transport_registry_routes_messages_to_stream_connections() {
         let registry = TransportRegistry::default();
@@ -798,5 +956,85 @@ mod tests {
         let sdp =
             "m=audio 12345 RTP/SAVP 0 8\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:key==\r\n";
         assert_eq!(sdp_audio_port(sdp), Some(12345));
+    }
+
+    #[test]
+    fn test_sdp_media_parser_identifies_audio_and_video_sections() {
+        let sdp = "v=0\r\n\
+                   o=alice 1234 1 IN IP4 192.168.1.100\r\n\
+                   s=-\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 49170 RTP/SAVP 0 8\r\n\
+                   a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:audio==\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   m=video 51372 RTP/SAVP 96 97\r\n\
+                   a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:video==\r\n\
+                   a=rtpmap:96 H264/90000\r\n\
+                   a=fmtp:96 profile-level-id=42e01f;packetization-mode=1\r\n\
+                   a=rtcp-fb:96 nack pli\r\n";
+
+        let media = parse_sdp_media_sections(sdp);
+
+        assert_eq!(media.len(), 2);
+        assert_eq!(media[0].kind, SdpMediaKind::Audio);
+        assert_eq!(media[0].media_index, 0);
+        assert_eq!(media[0].port, 49170);
+        assert!(media[0].active);
+        assert_eq!(media[1].kind, SdpMediaKind::Video);
+        assert_eq!(media[1].media_index, 1);
+        assert_eq!(media[1].port, 51372);
+        assert!(media[1].active);
+    }
+
+    #[test]
+    fn test_rewrite_sdp_media_rewrites_audio_and_video_ports() {
+        let sdp = "v=0\r\n\
+                   o=alice 1234 1 IN IP4 192.168.1.100\r\n\
+                   s=-\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 49170 RTP/SAVP 0 8\r\n\
+                   a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:audio==\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   m=video 51372 RTP/SAVP 96 97\r\n\
+                   a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:video==\r\n\
+                   a=rtpmap:96 H264/90000\r\n\
+                   a=fmtp:96 profile-level-id=42e01f;packetization-mode=1\r\n\
+                   a=rtcp-fb:96 nack pli\r\n";
+
+        let rewritten = rewrite_sdp_media(sdp, "10.0.0.1", &[(0, 10000), (1, 10002)]);
+
+        assert!(rewritten.contains("c=IN IP4 10.0.0.1"));
+        assert!(rewritten.contains("m=audio 10000 RTP/SAVP 0 8"));
+        assert!(rewritten.contains("m=video 10002 RTP/SAVP 96 97"));
+        assert!(rewritten.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:audio=="));
+        assert!(rewritten.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:video=="));
+        assert!(rewritten.contains("a=fmtp:96 profile-level-id=42e01f;packetization-mode=1"));
+        assert!(rewritten.contains("a=rtcp-fb:96 nack pli"));
+    }
+
+    #[test]
+    fn test_rewrite_sdp_media_preserves_rejected_video_port() {
+        let sdp = "v=0\r\n\
+                   o=alice 1234 1 IN IP4 192.168.1.100\r\n\
+                   s=-\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 49170 RTP/AVP 0 8\r\n\
+                   m=video 0 RTP/AVP 96\r\n\
+                   a=rtpmap:96 H264/90000\r\n";
+
+        let media = parse_sdp_media_sections(sdp);
+        assert_eq!(media.len(), 2);
+        assert_eq!(media[1].kind, SdpMediaKind::Video);
+        assert_eq!(media[1].port, 0);
+        assert!(!media[1].active);
+
+        let rewritten = rewrite_sdp_media(sdp, "10.0.0.1", &[(0, 10000)]);
+
+        assert!(rewritten.contains("m=audio 10000 RTP/AVP 0 8"));
+        assert!(rewritten.contains("m=video 0 RTP/AVP 96"));
+        assert!(rewritten.contains("a=rtpmap:96 H264/90000"));
     }
 }

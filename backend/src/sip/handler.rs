@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
 use super::media::{
-    MediaRelay, is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp, sdp_rtp_addr,
+    MediaRelay, is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp_media, sdp_rtp_addr,
 };
 use super::presence::Presence;
 use super::proxy::Proxy;
@@ -622,12 +622,13 @@ impl SipHandler {
     async fn rewrite_200ok_sdp(&self, call_id: &str, sdp: &str) -> Option<String> {
         let sessions = self.media_relay.sessions.lock().await;
         let session = sessions.get(call_id)?;
-        let relay_port_b = session.relay_port_b;
+        let caller_ports = session.caller_sdp_ports();
         let public_ip = self.media_relay.public_ip.as_str();
-        let new_sdp = rewrite_sdp(sdp, public_ip, relay_port_b);
+        let new_sdp = rewrite_sdp_media(sdp, public_ip, &caller_ports);
         info!(
-            "Rewrote 200 OK SDP for {}: relay_b={}",
-            call_id, relay_port_b
+            "Rewrote 200 OK SDP for {} with {} relayed media streams",
+            call_id,
+            caller_ports.len()
         );
         Some(new_sdp)
     }
