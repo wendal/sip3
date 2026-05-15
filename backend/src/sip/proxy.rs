@@ -11,6 +11,7 @@ use super::handler::{
     extract_uri, md5_hex, uri_username,
 };
 use super::media::{MediaRelay, is_webrtc_sdp, make_plain_rtp_sdp, rewrite_sdp, sdp_rtp_addr};
+use super::registrar::routable_contact_uri;
 use super::transport::TransportRegistry;
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
@@ -33,6 +34,14 @@ pub fn should_preserve_webrtc_sdp_for_target(contact_uri: &str, body: &str) -> b
 
 pub fn should_bridge_plain_sip_to_websocket_target(contact_uri: &str, body: &str) -> bool {
     is_websocket_contact_uri(contact_uri) && !body.is_empty() && !is_webrtc_sdp(body)
+}
+
+pub fn registered_target_uri(username: &str, contact_uri: &str, target_addr: SocketAddr) -> String {
+    if is_websocket_contact_uri(contact_uri) {
+        contact_uri.to_string()
+    } else {
+        routable_contact_uri(contact_uri, username, target_addr)
+    }
 }
 
 pub fn should_refresh_registration_source(
@@ -62,7 +71,7 @@ pub fn build_forwarded_cancel_for_target(
     let branch = proxy_via_branch(msg.call_id().unwrap_or(""));
     let mut out = format!("CANCEL {} SIP/2.0\r\n", target_uri);
     out.push_str(&format!(
-        "Via: SIP/2.0/UDP {};branch={}\r\n",
+        "Via: SIP/2.0/UDP {};branch={};rport\r\n",
         sip_domain, branch
     ));
     for via in msg.via_headers() {
@@ -78,6 +87,50 @@ pub fn build_forwarded_cancel_for_target(
         }
     }
     out.push_str("Content-Length: 0\r\n\r\n");
+    out
+}
+
+pub fn build_forwarded_invite_for_target(
+    msg: &SipMessage,
+    target_uri: &str,
+    max_fwd: u32,
+    sip_domain: &str,
+    rewritten_body: Option<&str>,
+) -> String {
+    let branch = proxy_via_branch(msg.call_id().unwrap_or(""));
+    let mut out = format!("INVITE {} SIP/2.0\r\n", target_uri);
+
+    out.push_str(&format!(
+        "Via: SIP/2.0/UDP {};branch={};rport\r\n",
+        sip_domain, branch
+    ));
+    for via in msg.via_headers() {
+        out.push_str(&format!("Via: {}\r\n", via));
+    }
+    out.push_str(&format!("Max-Forwards: {}\r\n", max_fwd));
+
+    // Record-Route so subsequent in-dialog requests (BYE, re-INVITE) are
+    // routed through this proxy, keeping media relay effective.
+    out.push_str(&format!("Record-Route: <sip:{};lr>\r\n", sip_domain));
+
+    let body = rewritten_body.unwrap_or(&msg.body);
+
+    for (name, vals) in &msg.headers {
+        if name == "via"
+            || name == "max-forwards"
+            || name == "content-length"
+            || name == "record-route"
+        {
+            continue;
+        }
+        for val in vals {
+            out.push_str(&format!("{}: {}\r\n", capitalize_header(name), val));
+        }
+    }
+
+    out.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    out.push_str("\r\n");
+    out.push_str(body);
     out
 }
 
@@ -287,7 +340,8 @@ impl Proxy {
         };
 
         // Forward INVITE to callee (with rewritten SDP and Record-Route).
-        let forwarded = self.build_forwarded_invite(msg, &contact_uri, max_fwd - 1, rewritten_body);
+        let target_uri = registered_target_uri(&callee, &contact_uri, target_addr);
+        let forwarded = self.build_forwarded_invite(msg, &target_uri, max_fwd - 1, rewritten_body);
         self.send_sip(forwarded, target_addr).await?;
 
         info!(
@@ -405,48 +459,17 @@ impl Proxy {
     fn build_forwarded_invite(
         &self,
         msg: &SipMessage,
-        contact_uri: &str,
+        target_uri: &str,
         max_fwd: u32,
         rewritten_body: Option<String>,
     ) -> String {
-        let branch = proxy_via_branch(msg.call_id().unwrap_or(""));
-        let mut out = format!("INVITE {} SIP/2.0\r\n", contact_uri);
-
-        out.push_str(&format!(
-            "Via: SIP/2.0/UDP {};branch={}\r\n",
-            self.cfg.server.sip_domain, branch
-        ));
-        for via in msg.via_headers() {
-            out.push_str(&format!("Via: {}\r\n", via));
-        }
-        out.push_str(&format!("Max-Forwards: {}\r\n", max_fwd));
-
-        // Record-Route so subsequent in-dialog requests (BYE, re-INVITE) are
-        // routed through this proxy, keeping media relay effective.
-        out.push_str(&format!(
-            "Record-Route: <sip:{};lr>\r\n",
-            self.cfg.server.sip_domain
-        ));
-
-        let body = rewritten_body.as_deref().unwrap_or(&msg.body);
-
-        for (name, vals) in &msg.headers {
-            if name == "via"
-                || name == "max-forwards"
-                || name == "content-length"
-                || name == "record-route"
-            {
-                continue;
-            }
-            for val in vals {
-                out.push_str(&format!("{}: {}\r\n", capitalize_header(name), val));
-            }
-        }
-
-        out.push_str(&format!("Content-Length: {}\r\n", body.len()));
-        out.push_str("\r\n");
-        out.push_str(body);
-        out
+        build_forwarded_invite_for_target(
+            msg,
+            target_uri,
+            max_fwd,
+            &self.cfg.server.sip_domain,
+            rewritten_body.as_deref(),
+        )
     }
 
     pub async fn handle_ack(&self, msg: &SipMessage, _src: SocketAddr) -> Result<()> {

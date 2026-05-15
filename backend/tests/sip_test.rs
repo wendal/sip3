@@ -13,10 +13,13 @@ mod tests {
     use sip3_backend::sip::media::{MediaRelay, rewrite_sdp, sdp_audio_port, sdp_has_crypto};
     use sip3_backend::sip::proxy::{
         CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL,
-        build_forwarded_cancel_for_target, should_bridge_plain_sip_to_websocket_target,
+        build_forwarded_cancel_for_target, build_forwarded_invite_for_target,
+        registered_target_uri, should_bridge_plain_sip_to_websocket_target,
         should_preserve_webrtc_sdp_for_target, should_refresh_registration_source,
     };
-    use sip3_backend::sip::registrar::{ACCOUNT_LOOKUP_SQL, generate_nonce, validate_nonce};
+    use sip3_backend::sip::registrar::{
+        ACCOUNT_LOOKUP_SQL, generate_nonce, routable_contact_uri, validate_nonce,
+    };
     use sip3_backend::sip::transport::TransportRegistry;
     use std::time::Duration;
 
@@ -403,6 +406,62 @@ mod tests {
         );
         assert!(forwarded.contains("Max-Forwards: 69"));
         assert!(forwarded.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn test_routable_contact_uri_uses_register_source_addr() {
+        let src = "203.0.113.44:62000".parse().expect("socket addr");
+        let rewritten = routable_contact_uri(
+            "<sip:1002@192.168.1.12:5060;transport=udp>;expires=3600",
+            "1002",
+            src,
+        );
+
+        assert_eq!(rewritten, "sip:1002@203.0.113.44:62000;transport=udp");
+    }
+
+    #[test]
+    fn test_registered_target_uri_uses_registration_source_addr_for_invite() {
+        let target = "198.51.100.7:53000".parse().expect("socket addr");
+        let uri = registered_target_uri("1003", "sip:1003@10.0.0.8:5060;transport=udp", target);
+
+        assert_eq!(uri, "sip:1003@198.51.100.7:53000;transport=udp");
+    }
+
+    #[test]
+    fn test_forwarded_invite_targets_public_registration_source_and_rport() {
+        let raw = "INVITE sip:1003@sip.air32.cn SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.2:56473;branch=z9hG4bK.NMNgTadYq;rport\r\n\
+                   Max-Forwards: 70\r\n\
+                   From: <sip:1001@sip.air32.cn>;tag=oP6liqShM\r\n\
+                   To: sip:1003@sip.air32.cn\r\n\
+                   Call-ID: NATInviteCall\r\n\
+                   CSeq: 20 INVITE\r\n\
+                   Contact: <sip:1001@192.168.1.2:56473;transport=udp>\r\n\
+                   Content-Type: application/sdp\r\n\
+                   Content-Length: 3\r\n\
+                   \r\n\
+                   v=0";
+
+        let msg = SipMessage::parse(raw).expect("parse invite");
+        let target = "198.51.100.7:53000".parse().expect("socket addr");
+        let target_uri =
+            registered_target_uri("1003", "sip:1003@10.0.0.8:5060;transport=udp", target);
+        let forwarded = build_forwarded_invite_for_target(
+            &msg,
+            &target_uri,
+            69,
+            "sip.air32.cn",
+            Some("v=0\r\ns=-"),
+        );
+
+        assert!(
+            forwarded.starts_with("INVITE sip:1003@198.51.100.7:53000;transport=udp SIP/2.0\r\n")
+        );
+        assert!(forwarded.contains("Via: SIP/2.0/UDP sip.air32.cn;branch=z9hG4bKproxy"));
+        assert!(forwarded.contains(";rport\r\n"));
+        assert!(!forwarded.contains("INVITE sip:1003@10.0.0.8:5060"));
+        assert!(forwarded.contains("Content-Length: 8\r\n\r\nv=0\r\ns=-"));
     }
 
     #[tokio::test]

@@ -37,7 +37,7 @@ services:
       SIP3__SERVER__API_HOST: "0.0.0.0"
       SIP3__SERVER__API_PORT: "3000"
       SIP3__SERVER__SIP_DOMAIN: "sip.air32.cn"
-      SIP3__SERVER__PUBLIC_IP: "sip.air32.cn"
+      SIP3__SERVER__PUBLIC_IP: "154.8.159.79"
       SIP3__SERVER__RTP_PORT_MIN: "10000"
       SIP3__SERVER__RTP_PORT_MAX: "10099"
       SIP3__SERVER__WEBRTC_PORT_MIN: "20000"
@@ -97,7 +97,7 @@ services:
       --realm=${SIP3__AUTH__REALM:-sip.air32.cn}
       --use-auth-secret
       --static-auth-secret=${TURN_SECRET:-change_me_in_production_secret}
-      --external-ip=${SIP3__SERVER__PUBLIC_IP:-127.0.0.1}
+      --external-ip=${SIP3__SERVER__PUBLIC_IP:-154.8.159.79}
       --relay-ip=0.0.0.0
       --min-port=49152
       --max-port=49200

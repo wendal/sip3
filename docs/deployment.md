@@ -61,7 +61,7 @@ sip_domain = "sip.air32.cn"
 api_host = "0.0.0.0"
 api_port = 3000
 # Public IPv4 of this server written into rewritten SDP c= lines
-public_ip = "sip.air32.cn"
+public_ip = "154.8.159.79"
 # UDP port range for RTP media relay
 rtp_port_min = 10000
 rtp_port_max = 20000
@@ -78,7 +78,7 @@ registration_expires = 3600
 Or set environment variables (prefix `SIP3__`):
 ```bash
 export SIP3__SERVER__SIP_DOMAIN=sip.air32.cn
-export SIP3__SERVER__PUBLIC_IP=sip.air32.cn
+export SIP3__SERVER__PUBLIC_IP=154.8.159.79
 export SIP3__DATABASE__URL=mysql://root:root@localhost:3306/sip3
 ```
 

@@ -149,7 +149,7 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | SIP3__SERVER__SIP_HOST            | 0.0.0.0        | SIP bind address                   |
 | SIP3__SERVER__SIP_PORT            | 5060           | SIP UDP port                       |
 | SIP3__SERVER__SIP_DOMAIN          | sip.air32.cn   | SIP domain / registrar realm       |
-| SIP3__SERVER__PUBLIC_IP           | sip.air32.cn   | Public IP written into SDP c= lines|
+| SIP3__SERVER__PUBLIC_IP           | 154.8.159.79   | Public IPv4 written into SDP c= lines|
 | SIP3__SERVER__RTP_PORT_MIN        | 10000          | RTP relay port range start         |
 | SIP3__SERVER__RTP_PORT_MAX        | 10099          | RTP relay port range end           |
 | SIP3__SERVER__TLS_CERT            | (empty)        | Path to TLS cert (PEM fullchain)   |

@@ -5,7 +5,7 @@ sip_domain = "sip.air32.cn"
 api_host = "0.0.0.0"
 api_port = 3000
 # Public IPv4 address written into rewritten SDP c= lines (required for RTP relay)
-public_ip = "sip.air32.cn"
+public_ip = "154.8.159.79"
 # UDP port range for RTP media relay
 rtp_port_min = 10000
 rtp_port_max = 20000

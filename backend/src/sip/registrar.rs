@@ -232,7 +232,8 @@ impl Registrar {
                 return Ok(base_response(msg, 200, "OK").build());
             }
 
-            let contact_uri = extract_uri(contact).unwrap_or_else(|| contact.to_string());
+            let raw_contact_uri = extract_uri(contact).unwrap_or_else(|| contact.to_string());
+            let contact_uri = routable_contact_uri(contact, &username, src);
             let user_agent = msg.user_agent().unwrap_or("");
             let expires_at = (Utc::now() + Duration::seconds(expires as i64)).naive_utc();
             let source_port = src.port();
@@ -263,6 +264,12 @@ impl Registrar {
                 "Registered {} at {} (expires in {}s)",
                 username, contact_uri, expires
             );
+            if raw_contact_uri != contact_uri {
+                info!(
+                    "Rewrote REGISTER Contact for {} from {} to {}",
+                    username, raw_contact_uri, contact_uri
+                );
+            }
             self.presence
                 .notify_status_change(&username, domain, PresenceStatus::Open)
                 .await;
@@ -274,6 +281,82 @@ impl Registrar {
             // No auth header - send a fresh challenge with a signed nonce.
             unauthorized_response(msg, domain, &self.nonce_secret)
         }
+    }
+}
+
+pub fn routable_contact_uri(contact: &str, fallback_username: &str, src: SocketAddr) -> String {
+    let uri = contact_uri_preserving_uri_params(contact);
+    let lower = uri.to_ascii_lowercase();
+    let scheme = if lower.starts_with("sips:") {
+        "sips"
+    } else {
+        "sip"
+    };
+    let username = uri_username(&uri)
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| fallback_username.to_string());
+    let params = uri_param_suffix(&uri);
+
+    format!(
+        "{}:{}@{}{}",
+        scheme,
+        username,
+        socket_addr_uri_host_port(src),
+        params
+    )
+}
+
+fn contact_uri_preserving_uri_params(contact: &str) -> String {
+    if let Some(uri) = extract_uri(contact)
+        && contact.trim_start().starts_with('<')
+    {
+        return uri;
+    }
+
+    let trimmed = contact.trim();
+    let mut parts = trimmed.split(';');
+    let mut uri = parts.next().unwrap_or(trimmed).trim().to_string();
+    for param in parts {
+        let key = param
+            .split_once('=')
+            .map(|(name, _)| name)
+            .unwrap_or(param)
+            .trim()
+            .to_ascii_lowercase();
+        if is_contact_uri_param(&key) {
+            uri.push(';');
+            uri.push_str(param.trim());
+        }
+    }
+    uri
+}
+
+fn is_contact_uri_param(key: &str) -> bool {
+    matches!(
+        key,
+        "transport" | "user" | "method" | "maddr" | "ttl" | "lr" | "ob" | "gr" | "alias"
+    )
+}
+
+fn uri_param_suffix(uri: &str) -> &str {
+    let without_scheme = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))
+        .unwrap_or(uri);
+    let host_and_params = without_scheme
+        .split_once('@')
+        .map(|(_, rest)| rest)
+        .unwrap_or(without_scheme);
+    host_and_params
+        .find(';')
+        .map(|idx| &host_and_params[idx..])
+        .unwrap_or("")
+}
+
+fn socket_addr_uri_host_port(src: SocketAddr) -> String {
+    match src.ip() {
+        IpAddr::V4(ip) => format!("{}:{}", ip, src.port()),
+        IpAddr::V6(ip) => format!("[{}]:{}", ip, src.port()),
     }
 }
 
