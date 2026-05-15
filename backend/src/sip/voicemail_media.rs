@@ -213,16 +213,14 @@ pub async fn record_to_storage(
             Err(_) => continue,
         };
 
-        *session.peer.lock().await = Some(src);
         let packet = &buf[..len];
-        let Some(payload_offset) = rtp_payload_offset(packet) else {
+        let Some((pt, payload_offset)) = validated_rtp_packet(&session, packet) else {
             continue;
         };
-        if payload_offset >= packet.len() {
+        if !learn_or_verify_peer(&session, src).await {
             continue;
         }
 
-        let pt = packet[1] & 0x7F;
         let payload = &packet[payload_offset..];
         if Some(pt) == session.telephone_event_pt {
             if rtp_dtmf_is_end(payload)
@@ -439,9 +437,13 @@ async fn wait_for_peer(session: &MediaSession) -> Result<SocketAddr> {
         }
         let wait = RECV_POLL.min(deadline.saturating_duration_since(now));
         match timeout(wait, session.socket.recv_from(&mut buf)).await {
-            Ok(Ok((_len, src))) => {
-                *session.peer.lock().await = Some(src);
-                return Ok(src);
+            Ok(Ok((len, src))) => {
+                let packet = &buf[..len];
+                if validated_rtp_packet(session, packet).is_some()
+                    && learn_or_verify_peer(session, src).await
+                {
+                    return Ok(src);
+                }
             }
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {}
@@ -453,7 +455,14 @@ async fn refresh_peer_nonblocking(session: &MediaSession, buf: &mut [u8]) -> Opt
     let mut latest = None;
     loop {
         match session.socket.try_recv_from(buf) {
-            Ok((_len, src)) => latest = Some(src),
+            Ok((len, src)) => {
+                let packet = &buf[..len];
+                if validated_rtp_packet(session, packet).is_some()
+                    && learn_or_verify_peer(session, src).await
+                {
+                    latest = Some(src);
+                }
+            }
             Err(e) if e.kind() == ErrorKind::WouldBlock => break,
             Err(e) => {
                 warn!("voicemail RTP peer refresh error: {}", e);
@@ -461,10 +470,31 @@ async fn refresh_peer_nonblocking(session: &MediaSession, buf: &mut [u8]) -> Opt
             }
         }
     }
-    if let Some(src) = latest {
-        *session.peer.lock().await = Some(src);
-    }
     latest
+}
+
+fn validated_rtp_packet(session: &MediaSession, packet: &[u8]) -> Option<(u8, usize)> {
+    let payload_offset = rtp_payload_offset(packet)?;
+    if payload_offset >= packet.len() {
+        return None;
+    }
+    let pt = packet[1] & 0x7F;
+    if pt != session.audio_pt && Some(pt) != session.telephone_event_pt {
+        return None;
+    }
+    Some((pt, payload_offset))
+}
+
+async fn learn_or_verify_peer(session: &MediaSession, src: SocketAddr) -> bool {
+    let mut peer = session.peer.lock().await;
+    match *peer {
+        Some(existing) if existing != src => false,
+        Some(_) => true,
+        None => {
+            *peer = Some(src);
+            true
+        }
+    }
 }
 
 #[cfg(test)]
@@ -660,6 +690,102 @@ mod tests {
         media.remove(&call_id).await;
         storage.delete(&key).await.expect("delete");
         let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn record_ignores_malformed_packets_when_learning_peer() {
+        let call_id = format!("malformed-peer-call-{}", rand::rng().random::<u64>());
+        let (media, port) = allocate_test_session(&call_id, VoicemailCodec::Pcmu).await;
+        let session = get_session(&call_id).await.expect("session");
+        let root = std::path::PathBuf::from(format!(
+            "target\\voicemail-media-tests\\{}",
+            rand::rng().random::<u64>()
+        ));
+        let storage = LocalVoicemailStorage::new(root.clone());
+        let sender = UdpSocket::bind("127.0.0.1:0").await.expect("sender bind");
+        let dst = format!("127.0.0.1:{port}");
+
+        let recorder = async {
+            record_to_storage(&call_id, "1001", 2, 1, &storage)
+                .await
+                .expect("record")
+        };
+        let poison = async {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            sender
+                .send_to(&[0x80, 0x00, 0x00], &dst)
+                .await
+                .expect("send malformed");
+        };
+
+        let ((key, _duration), _) = tokio::join!(recorder, poison);
+
+        assert_eq!(*session.peer.lock().await, None);
+
+        media.remove(&call_id).await;
+        storage.delete(&key).await.expect("delete");
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn wait_for_peer_skips_mismatched_payload_type() {
+        let call_id = format!("wait-peer-call-{}", rand::rng().random::<u64>());
+        let (media, port) = allocate_test_session(&call_id, VoicemailCodec::Pcmu).await;
+        let session = get_session(&call_id).await.expect("session");
+        let wrong_sender = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("wrong sender bind");
+        let valid_sender = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("valid sender bind");
+        let dst = format!("127.0.0.1:{port}");
+        let valid_addr = valid_sender.local_addr().expect("valid addr");
+
+        let waiter = async { wait_for_peer(&session).await.expect("peer") };
+        let sender = async {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let wrong = build_rtp_packet(96, 1, 160, 0x01020304, &[0xaa; SAMPLES_PER_FRAME]);
+            wrong_sender
+                .send_to(&wrong, &dst)
+                .await
+                .expect("send wrong pt");
+            let valid = build_rtp_packet(0, 2, 320, 0x01020304, &[0xff; SAMPLES_PER_FRAME]);
+            valid_sender
+                .send_to(&valid, &dst)
+                .await
+                .expect("send valid pt");
+        };
+
+        let (peer, _) = tokio::join!(waiter, sender);
+
+        assert_eq!(peer, valid_addr);
+
+        media.remove(&call_id).await;
+    }
+
+    #[tokio::test]
+    async fn refresh_peer_ignores_different_source_once_peer_known() {
+        let call_id = format!("refresh-peer-call-{}", rand::rng().random::<u64>());
+        let (media, port) = allocate_test_session(&call_id, VoicemailCodec::Pcmu).await;
+        let session = get_session(&call_id).await.expect("session");
+        let trusted_peer = UdpSocket::bind("127.0.0.1:0").await.expect("trusted bind");
+        let attacker = UdpSocket::bind("127.0.0.1:0").await.expect("attacker bind");
+        let trusted_addr = trusted_peer.local_addr().expect("trusted addr");
+        let dst = format!("127.0.0.1:{port}");
+        *session.peer.lock().await = Some(trusted_addr);
+
+        let attack = build_rtp_packet(0, 1, 160, 0x01020304, &[0xff; SAMPLES_PER_FRAME]);
+        attacker
+            .send_to(&attack, &dst)
+            .await
+            .expect("send attacker packet");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let mut buf = [0u8; RTP_BUF_SIZE];
+
+        assert_eq!(refresh_peer_nonblocking(&session, &mut buf).await, None);
+        assert_eq!(*session.peer.lock().await, Some(trusted_addr));
+
+        media.remove(&call_id).await;
     }
 
     async fn allocate_test_session(call_id: &str, codec: VoicemailCodec) -> (VoicemailMedia, u16) {
