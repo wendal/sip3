@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
+use super::conference::Conference;
+use super::conference_media::ConferenceMedia;
 use super::media::{
     MediaRelay, is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp_media, sdp_rtp_addr,
 };
@@ -199,6 +201,11 @@ impl SipResponseBuilder {
         self
     }
 
+    pub fn body(mut self, body: &str) -> Self {
+        self.body = body.to_string();
+        self
+    }
+
     pub fn build(self) -> String {
         let content_len = self.body.len();
         let mut msg = format!("SIP/2.0 {} {}\r\n", self.status_code, self.reason);
@@ -366,6 +373,22 @@ pub fn strip_proxy_via(raw: &str, sip_domain: &str) -> String {
     lines.join("\r\n")
 }
 
+fn finalize_response(
+    msg: &SipMessage,
+    response: Result<String>,
+    method: &str,
+) -> Result<Option<String>> {
+    match response {
+        Ok(resp) => Ok(Some(resp)),
+        Err(e) => {
+            warn!("Error handling {}: {}", method, e);
+            Ok(Some(
+                base_response(msg, 500, "Internal Server Error").build(),
+            ))
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SipHandler {
     cfg: Config,
@@ -378,6 +401,7 @@ pub struct SipHandler {
     presence: Presence,
     webrtc_gateway: Arc<WebRtcGateway>,
     transport_registry: TransportRegistry,
+    conference: Conference,
 }
 
 impl SipHandler {
@@ -413,7 +437,7 @@ impl SipHandler {
             security_guard.clone(),
         );
         let proxy = Proxy::new(
-            pool,
+            pool.clone(),
             cfg.clone(),
             socket.clone(),
             dialog_stores,
@@ -421,6 +445,12 @@ impl SipHandler {
             webrtc_gateway.clone(),
             transport_registry.clone(),
         );
+        let conference_media = ConferenceMedia::new(
+            cfg.server.public_ip.clone(),
+            cfg.server.conference_rtp_port_min,
+            cfg.server.conference_rtp_port_max,
+        );
+        let conference = Conference::new(pool, cfg.clone(), conference_media);
         Self {
             cfg,
             socket,
@@ -432,6 +462,7 @@ impl SipHandler {
             presence,
             webrtc_gateway,
             transport_registry,
+            conference,
         }
     }
 
@@ -444,6 +475,11 @@ impl SipHandler {
     /// Expose the WebRTC gateway for background cleanup.
     pub fn webrtc_gateway(&self) -> &Arc<WebRtcGateway> {
         &self.webrtc_gateway
+    }
+
+    /// Expose the conference service for startup reconciliation tasks.
+    pub fn conference(&self) -> &Conference {
+        &self.conference
     }
 
     pub fn register_stream(&self, src: SocketAddr) -> tokio::sync::mpsc::UnboundedReceiver<String> {
@@ -491,6 +527,44 @@ impl SipHandler {
         };
 
         info!("SIP {} from {}", method, src);
+
+        // Route conference traffic before generic proxy handling.
+        let call_id_str = msg.call_id().unwrap_or("").to_string();
+        let is_conf =
+            !call_id_str.is_empty() && self.conference.is_conference_call(&call_id_str).await;
+
+        if method == "INVITE" {
+            let req_uri = msg.request_uri.as_deref().unwrap_or("");
+            let target = uri_username(req_uri).unwrap_or_default();
+            let domain = self.cfg.server.sip_domain.clone();
+            if let Some((room_id, max_p)) = self.conference.lookup_room(&target, &domain).await {
+                let resp = self
+                    .conference
+                    .handle_invite(&msg, src, room_id, max_p)
+                    .await;
+                return finalize_response(&msg, resp, &method);
+            }
+        } else if is_conf {
+            match method.as_str() {
+                "ACK" => {
+                    self.conference.handle_ack(&msg).await;
+                    return Ok(None);
+                }
+                "BYE" => {
+                    let resp = self.conference.handle_bye(&msg).await;
+                    return finalize_response(&msg, resp, &method);
+                }
+                "CANCEL" => {
+                    let resp = self.conference.handle_cancel(&msg).await;
+                    return finalize_response(&msg, resp, &method);
+                }
+                "INFO" => {
+                    let resp = self.conference.handle_info(&msg).await;
+                    return finalize_response(&msg, resp, &method);
+                }
+                _ => {}
+            }
+        }
 
         let response = match method.as_str() {
             "REGISTER" => self.registrar.handle_register(&msg, src).await,

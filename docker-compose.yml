@@ -40,6 +40,8 @@ services:
       SIP3__SERVER__PUBLIC_IP: "154.8.159.79"
       SIP3__SERVER__RTP_PORT_MIN: "10000"
       SIP3__SERVER__RTP_PORT_MAX: "10099"
+      SIP3__SERVER__CONFERENCE_RTP_PORT_MIN: "10100"
+      SIP3__SERVER__CONFERENCE_RTP_PORT_MAX: "10199"
       SIP3__SERVER__WEBRTC_PORT_MIN: "20000"
       SIP3__SERVER__WEBRTC_PORT_MAX: "20099"
       SIP3__AUTH__REALM: "sip.air32.cn"
@@ -53,6 +55,7 @@ services:
       - "5443:5443/tcp"
       - "3000:3000"
       - "10000-10099:10000-10099/udp"
+      - "10100-10199:10100-10199/udp"
       - "20000-20099:20000-20099/udp"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]

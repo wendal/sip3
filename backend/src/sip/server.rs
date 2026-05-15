@@ -56,6 +56,12 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let handler = SipHandler::with_socket(cfg.clone(), pool.clone(), socket.clone());
     let mut buf = vec![0u8; 65535];
 
+    // Mark any conference participants left active in the DB as ended; their
+    // in-memory media sessions did not survive the restart.
+    if let Err(e) = handler.conference().reconcile_active_on_startup().await {
+        warn!("Conference participant reconciliation failed: {}", e);
+    }
+
     // Spawn the SIP/TLS (TCP) server if cert + key are configured.
     if !cfg.server.tls_cert.is_empty() && !cfg.server.tls_key.is_empty() {
         let tls_cfg = cfg.clone();

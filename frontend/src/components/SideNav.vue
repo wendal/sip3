@@ -34,7 +34,7 @@
 <script setup>
 import { useRoute } from 'vue-router'
 import {
-  DataLine, User, Lock, Monitor, WarningFilled, Setting, PhoneFilled,
+  DataLine, User, Lock, Monitor, WarningFilled, Setting, PhoneFilled, ChatDotRound,
 } from '@element-plus/icons-vue'
 
 defineProps({
@@ -47,6 +47,7 @@ const route = useRoute()
 const items = [
   { path: '/dashboard',   label: '控制台',   icon: DataLine },
   { path: '/accounts',    label: 'SIP 账号', icon: User },
+  { path: '/conferences', label: '会议室',   icon: ChatDotRound },
   { path: '/acl',         label: 'IP ACL',   icon: Lock },
   { path: '/status',      label: '系统状态', icon: Monitor },
   { path: '/security',    label: '安全监控', icon: WarningFilled },

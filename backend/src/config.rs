@@ -31,6 +31,10 @@ pub struct ServerConfig {
     pub webrtc_port_min: u16,
     /// Upper bound of the UDP port range used for WebRTC ICE (must be Docker-mapped).
     pub webrtc_port_max: u16,
+    /// Lower bound of the UDP port range used for conference RTP sockets.
+    pub conference_rtp_port_min: u16,
+    /// Upper bound of the UDP port range used for conference RTP sockets.
+    pub conference_rtp_port_max: u16,
     /// TCP+TLS SIP port (default: 5061). TLS is enabled only when tls_cert is set.
     pub tls_port: u16,
     /// Path to PEM-encoded TLS certificate chain. Empty = TLS disabled.
@@ -128,6 +132,8 @@ impl Config {
             .set_default("server.rtp_port_max", 10099)?
             .set_default("server.webrtc_port_min", 20000)?
             .set_default("server.webrtc_port_max", 20099)?
+            .set_default("server.conference_rtp_port_min", 10100)?
+            .set_default("server.conference_rtp_port_max", 10199)?
             .set_default("server.tls_port", 5061)?
             .set_default("server.tls_cert", "")?
             .set_default("server.tls_key", "")?

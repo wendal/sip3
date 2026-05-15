@@ -22,6 +22,7 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 #### SIP Core
 - ✅ SIP REGISTER — RFC 3261 MD5 Digest Authentication
 - ✅ SIP INVITE proxy/B2BUA — looks up registration, rewrites SDP, relays RTP
+- ✅ **Audio conference rooms** — local B2BUA endpoint with server-side G.711 (PCMU/PCMA) mixer; dial e.g. `sip:900000000@<domain>`; `*6` DTMF (RFC 2833 or SIP INFO) toggles mute. MVP is SIP UDP/TLS only — no SRTP/video/WebRTC, no PIN.
 - ✅ SIP BYE / CANCEL / INFO bidirectional routing
 - ✅ SIP REFER + NOTIFY — blind call transfer
 - ✅ SIP SUBSCRIBE / NOTIFY — Presence & BLF (busy lamp field)
@@ -79,6 +80,7 @@ Open **http://localhost:8030** for the admin UI (default: `admin` / `admin123`).
 | SIP/WS         | TCP 5080             |
 | SIP/WSS        | TCP 5443             |
 | RTP relay      | UDP 10000–10099      |
+| Conference RTP | UDP 10100–10199      |
 | TURN/UDP       | UDP 3478             |
 | TURN/TLS       | TCP 5349             |
 
@@ -152,6 +154,8 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | SIP3__SERVER__PUBLIC_IP           | 154.8.159.79   | Public IPv4 written into SDP c= lines|
 | SIP3__SERVER__RTP_PORT_MIN        | 10000          | RTP relay port range start         |
 | SIP3__SERVER__RTP_PORT_MAX        | 10099          | RTP relay port range end           |
+| SIP3__SERVER__CONFERENCE_RTP_PORT_MIN | 10100      | Conference RTP port range start    |
+| SIP3__SERVER__CONFERENCE_RTP_PORT_MAX | 10199      | Conference RTP port range end      |
 | SIP3__SERVER__TLS_CERT            | (empty)        | Path to TLS cert (PEM fullchain)   |
 | SIP3__SERVER__TLS_KEY             | (empty)        | Path to TLS private key (PEM)      |
 | SIP3__SERVER__WS_PORT             | 5080           | SIP/WS port (0 = disabled)         |
@@ -217,6 +221,7 @@ SIP3 是一个功能完整的 SIP 代理/注册服务器，使用 Rust 构建后
 #### SIP 核心
 - ✅ SIP REGISTER — RFC 3261 MD5 摘要认证
 - ✅ SIP INVITE 代理/B2BUA — 查找注册、重写 SDP、中继 RTP
+- ✅ **音频会议室** — 本地 B2BUA 端点，服务端 G.711 (PCMU/PCMA) 混音；拨打如 `sip:900000000@<域>` 入会；`*6` DTMF（RFC 2833 或 SIP INFO）切换静音。MVP 仅支持 SIP UDP/TLS，不支持 SRTP/视频/WebRTC，无 PIN。
 - ✅ SIP BYE / CANCEL / INFO 双向路由
 - ✅ SIP REFER + NOTIFY — 盲转呼叫
 - ✅ SIP SUBSCRIBE / NOTIFY — 在线状态与 BLF（忙灯显示）

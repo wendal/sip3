@@ -28,6 +28,7 @@ Services started:
 - MySQL on port 3306
 - SIP server on UDP port 5060
 - RTP media relay on UDP ports 10000–10099
+- Conference RTP on UDP ports 10100–10199 (for audio conference rooms)
 - REST API on port 3000
 - Admin UI on port 8030
 
@@ -114,6 +115,19 @@ When an INVITE is proxied, the server:
 
 This means clients behind NAT with no fixed public IP can call each other normally. A pure audio call consumes two relay ports; an audio+video SIP phone call consumes four. Keep Docker port ranges modest for startup performance, but size `rtp_port_min`–`rtp_port_max` for the expected concurrent video calls. Browser WebRTC video is separate from this legacy SIP RTP relay path.
 
+## Conference Rooms
+
+SIP3 hosts audio conference rooms as a local B2BUA endpoint with server-side mixing.
+
+- Dial format: `sip:<9-digit-extension>@<sip-domain>` — e.g. `sip:900000000@sip.air32.cn` (default seeded room "Default Conference").
+- Room extensions are 9-digit numeric, separate from the 3–6 digit user-account range to avoid collisions.
+- Codecs: G.711 PCMU/PCMA only (RTP/AVP). MVP rejects SRTP/SAVP, video, and WebRTC offers.
+- DTMF mute: `*6` toggles the caller's mute state. Both RFC 2833 telephone-event RTP and Linphone-style SIP `INFO application/dtmf-relay` are accepted.
+- Each participant uses one UDP port from `conference_rtp_port_min`–`conference_rtp_port_max` (defaults `10100`–`10199`). Sized for ~100 concurrent participants per host. Expand both the config range and Docker port mapping if needed.
+- Authentication: caller must be an existing enabled `sip_accounts` row in the local realm. No PIN in MVP.
+- Manage rooms in the admin UI (sidebar → "会议室"). API: `GET/POST /api/conferences`, `PUT/DELETE /api/conferences/:id`, `GET /api/conferences/:id/participants`.
+- Voicemail and MWI are not part of this release; planned as a separate feature.
+
 ## SIP Client Configuration
 
 Configure your SIP client (Linphone, Zoiper, etc.):
@@ -170,6 +184,7 @@ Open these ports:
 ```
 UDP 5060         - SIP signaling
 UDP 10000-10099  - RTP media relay
+UDP 10100-10199  - Conference room RTP (G.711 mixer)
 TCP 3000         - REST API (internal only in production)
 TCP 8030/443     - Admin UI
 TCP 3306         - MySQL (internal only)

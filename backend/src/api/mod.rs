@@ -20,6 +20,7 @@ pub mod accounts;
 pub mod acl;
 pub mod admin_users;
 pub mod auth;
+pub mod conferences;
 pub mod jwt;
 pub mod messages;
 pub mod security;
@@ -171,6 +172,18 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .route(
             "/api/admin/users/:id",
             put(admin_users::update).delete(admin_users::delete_user),
+        )
+        .route(
+            "/api/conferences",
+            get(conferences::list).post(conferences::create),
+        )
+        .route(
+            "/api/conferences/:id",
+            put(conferences::update).delete(conferences::delete_room),
+        )
+        .route(
+            "/api/conferences/:id/participants",
+            get(conferences::list_participants),
         )
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
