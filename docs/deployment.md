@@ -29,6 +29,7 @@ Services started:
 - SIP server on UDP port 5060
 - RTP media relay on UDP ports 10000–10099
 - Conference RTP on UDP ports 10100–10199 (for audio conference rooms)
+- Voicemail RTP on UDP ports 10200–10299; WAV storage mounted at `./voicemail` in Docker Compose
 - REST API on port 3000
 - Admin UI on port 8030
 
@@ -66,6 +67,18 @@ public_ip = "154.8.159.79"
 # UDP port range for RTP media relay
 rtp_port_min = 10000
 rtp_port_max = 20000
+# UDP port range for conference mixing
+conference_rtp_port_min = 10100
+conference_rtp_port_max = 10199
+# Voicemail access, storage, prompts, and media range
+voicemail_access_extension = "*97"
+voicemail_no_answer_secs = 25
+voicemail_max_message_secs = 120
+voicemail_idle_timeout_secs = 10
+voicemail_storage_dir = "voicemail"
+voicemail_prompt_dir = "voicemail/prompts"
+voicemail_rtp_port_min = 10200
+voicemail_rtp_port_max = 10299
 
 [database]
 url = "mysql://root:root@localhost:3306/sip3"
@@ -80,6 +93,12 @@ Or set environment variables (prefix `SIP3__`):
 ```bash
 export SIP3__SERVER__SIP_DOMAIN=sip.air32.cn
 export SIP3__SERVER__PUBLIC_IP=154.8.159.79
+export SIP3__SERVER__VOICEMAIL_ACCESS_EXTENSION='*97'
+export SIP3__SERVER__VOICEMAIL_NO_ANSWER_SECS=25
+export SIP3__SERVER__VOICEMAIL_STORAGE_DIR=voicemail
+export SIP3__SERVER__VOICEMAIL_PROMPT_DIR=voicemail/prompts
+export SIP3__SERVER__VOICEMAIL_RTP_PORT_MIN=10200
+export SIP3__SERVER__VOICEMAIL_RTP_PORT_MAX=10299
 export SIP3__DATABASE__URL=mysql://root:root@localhost:3306/sip3
 ```
 
@@ -126,7 +145,20 @@ SIP3 hosts audio conference rooms as a local B2BUA endpoint with server-side mix
 - Each participant uses one UDP port from `conference_rtp_port_min`–`conference_rtp_port_max` (defaults `10100`–`10199`). Sized for ~100 concurrent participants per host. Expand both the config range and Docker port mapping if needed.
 - Authentication: caller must be an existing enabled `sip_accounts` row in the local realm. No PIN in MVP.
 - Manage rooms in the admin UI (sidebar → "会议室"). API: `GET/POST /api/conferences`, `PUT/DELETE /api/conferences/:id`, `GET /api/conferences/:id/participants`.
-- Voicemail and MWI are not part of this release; planned as a separate feature.
+
+
+## Voicemail
+
+SIP3 provides local voicemail mailboxes for SIP phone users.
+
+- Delivery: calls to enabled mailboxes are answered immediately when the user is offline. For registered users who do not answer, voicemail answers after `voicemail_no_answer_secs` (default 25 seconds).
+- Access: mailbox owners dial `*97` from their own extension.
+- Codecs: G.711 PCMU/PCMA over RTP/AVP only. The voicemail MVP excludes SRTP/SAVP, Opus, video, browser/WebRTC voicemail, mailbox PINs, busy-to-voicemail routing, and email notifications.
+- MWI: phones subscribe with `SUBSCRIBE Event: message-summary`; SIP3 sends `NOTIFY` (`application/simple-message-summary`) as new/saved counts change.
+- Storage: messages are local WAV files under `voicemail_storage_dir`; prompts are WAV files under `voicemail_prompt_dir`. Docker Compose sets these to `/app/voicemail` and `/app/voicemail/prompts` and mounts host `./voicemail`.
+- RTP: voicemail media uses `voicemail_rtp_port_min`–`voicemail_rtp_port_max` (defaults `10200`–`10299`). Open and map this UDP range independently from relay RTP (`10000`–`10099`) and conference RTP (`10100`–`10199`).
+- DTMF menu: `1` replay, `2` or `#` save/next, `7` delete, `9` save, `*` exit/back. RFC 2833 telephone-event RTP and SIP `INFO application/dtmf-relay` are recognized.
+- Admin UI/API: manage boxes and messages in the admin UI. API routes are `GET/POST /api/voicemail/boxes`, `PUT /api/voicemail/boxes/:id`, `GET /api/voicemail/messages`, `PUT/DELETE /api/voicemail/messages/:id`, and `GET /api/voicemail/messages/:id/download`.
 
 ## SIP Client Configuration
 
@@ -185,6 +217,7 @@ Open these ports:
 UDP 5060         - SIP signaling
 UDP 10000-10099  - RTP media relay
 UDP 10100-10199  - Conference room RTP (G.711 mixer)
+UDP 10200-10299  - Voicemail RTP (G.711 PCMU/PCMA)
 TCP 3000         - REST API (internal only in production)
 TCP 8030/443     - Admin UI
 TCP 3306         - MySQL (internal only)
@@ -219,6 +252,14 @@ TCP 3306         - MySQL (internal only)
 - Verify UDP ports 10000–10099 are open and forwarded to the server
 - Verify `server.public_ip` is the actual public IP address visible to clients
 - Check server logs for "Allocated media relay" and "RTP relay" messages
+
+### Voicemail does not answer or has no audio
+- Confirm the destination account has an enabled voicemail box
+- For no-answer delivery, wait at least `voicemail_no_answer_secs` (default 25 seconds) before expecting voicemail to answer
+- Verify UDP ports 10200–10299 are open and forwarded to the server
+- Verify prompt WAV files exist under `voicemail_prompt_dir` and message WAV files can be written under `voicemail_storage_dir`
+- Confirm the phone offers PCMU or PCMA over RTP/AVP; SRTP/SAVP, Opus, and WebRTC voicemail are not supported
+- For MWI, confirm the phone sends `SUBSCRIBE Event: message-summary`
 
 ### No video in Linphone after call connects
 - Verify UDP ports 10000–10099 are open and forwarded to the server

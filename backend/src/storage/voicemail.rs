@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -80,21 +80,21 @@ pub fn pcm16_wav_bytes(samples: &[i16], sample_rate: u32) -> Vec<u8> {
     if sample_rate == 0 {
         panic!("sample_rate must be non-zero");
     }
-    
+
     let num_samples = samples.len();
     let data_len = num_samples
         .checked_mul(2)
         .and_then(|v| u32::try_from(v).ok())
         .expect("WAV data size exceeds u32 limit");
-    
+
     let byte_rate = sample_rate
         .checked_mul(2)
         .expect("sample_rate * 2 overflows u32");
-    
+
     let riff_chunk_size = 36u32
         .checked_add(data_len)
         .expect("RIFF chunk size exceeds u32 limit");
-    
+
     let mut out = Vec::with_capacity(44 + data_len as usize);
     out.extend_from_slice(b"RIFF");
     out.extend_from_slice(&riff_chunk_size.to_le_bytes());
@@ -220,10 +220,12 @@ mod tests {
         wav[23] = 0;
         let result = read_pcm16_wav(&wav);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("WAV must be mono PCM16"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("WAV must be mono PCM16")
+        );
     }
 
     #[test]
@@ -270,7 +272,12 @@ mod tests {
         wav.extend_from_slice(&1000u32.to_le_bytes()); // claims 1000 bytes but file ends here
         let result = read_pcm16_wav(&wav);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("truncated WAV data"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("truncated WAV data")
+        );
     }
 
     #[test]
@@ -300,7 +307,11 @@ mod tests {
     #[cfg(windows)]
     fn path_for_key_rejects_absolute_windows() {
         let storage = LocalVoicemailStorage::new(PathBuf::from("C:\\voicemail"));
-        assert!(storage.path_for_key("C:\\Windows\\System32\\config").is_err());
+        assert!(
+            storage
+                .path_for_key("C:\\Windows\\System32\\config")
+                .is_err()
+        );
         assert!(storage.path_for_key("D:\\data").is_err());
     }
 

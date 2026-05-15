@@ -11,8 +11,8 @@ use std::path::PathBuf;
 
 use super::AppState;
 use crate::models::{
-    CreateVoicemailBox, UpdateVoicemailBox, UpdateVoicemailMessage,
-    VoicemailBoxSummary, VoicemailMessage, validate_box_limits, validate_voicemail_status,
+    CreateVoicemailBox, UpdateVoicemailBox, UpdateVoicemailMessage, VoicemailBoxSummary,
+    VoicemailMessage, validate_box_limits, validate_voicemail_status,
 };
 use crate::storage::voicemail::LocalVoicemailStorage;
 
@@ -71,14 +71,13 @@ pub async fn create_box(
         .map_err(|m| (StatusCode::BAD_REQUEST, m.to_string()))?;
 
     // Verify the account exists and is enabled
-    let account_exists: Option<(i8,)> = sqlx::query_as(
-        "SELECT enabled FROM sip_accounts WHERE username = ? AND domain = ?",
-    )
-    .bind(&body.username)
-    .bind(&domain)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let account_exists: Option<(i8,)> =
+        sqlx::query_as("SELECT enabled FROM sip_accounts WHERE username = ? AND domain = ?")
+            .bind(&body.username)
+            .bind(&domain)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match account_exists {
         None => {
@@ -87,7 +86,7 @@ pub async fn create_box(
                 format!("Account {}@{} not found", body.username, domain),
             ));
         }
-        Some((enabled_flag,)) if enabled_flag == 0 => {
+        Some((0,)) => {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("Account {}@{} is disabled", body.username, domain),
@@ -177,10 +176,7 @@ pub async fn update_box(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if result.rows_affected() == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "Voicemail box not found".to_string(),
-        ));
+        return Err((StatusCode::NOT_FOUND, "Voicemail box not found".to_string()));
     }
 
     Ok(Json(json!({ "message": "Voicemail box updated" })))
@@ -192,8 +188,7 @@ pub async fn list_messages(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     // Validate status if provided
     if let Some(ref status) = params.status {
-        validate_voicemail_status(status)
-            .map_err(|m| (StatusCode::BAD_REQUEST, m.to_string()))?;
+        validate_voicemail_status(status).map_err(|m| (StatusCode::BAD_REQUEST, m.to_string()))?;
     }
 
     // Build query dynamically based on filters

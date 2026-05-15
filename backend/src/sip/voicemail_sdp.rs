@@ -253,7 +253,8 @@ mod tests {
 
     #[test]
     fn picks_pcmu_over_pcma_when_pcma_first() {
-        let offer = "v=0\r\nm=audio 5000 RTP/AVP 8 0\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:0 PCMU/8000\r\n";
+        let offer =
+            "v=0\r\nm=audio 5000 RTP/AVP 8 0\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:0 PCMU/8000\r\n";
         let n = negotiate_offer(offer).expect("negotiate");
         assert_eq!(n.codec, VoicemailCodec::Pcmu);
         assert_eq!(n.audio_pt, 0);

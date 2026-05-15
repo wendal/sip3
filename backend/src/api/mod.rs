@@ -190,10 +190,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             "/api/voicemail/boxes",
             get(voicemail::list_boxes).post(voicemail::create_box),
         )
-        .route(
-            "/api/voicemail/boxes/:id",
-            put(voicemail::update_box),
-        )
+        .route("/api/voicemail/boxes/:id", put(voicemail::update_box))
         .route("/api/voicemail/messages", get(voicemail::list_messages))
         .route(
             "/api/voicemail/messages/:id",
