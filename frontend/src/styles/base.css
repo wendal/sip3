@@ -1,0 +1,170 @@
+/*
+ * Global base styles. Imported once from main.js after tokens.css.
+ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--sip-bg);
+  color: var(--sip-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI',
+               'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+               Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: var(--sip-primary); text-decoration: none; }
+a:hover { color: var(--sip-primary-hover); }
+
+/* Tabular numerals for any element with .num */
+.num, .tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Subtle scrollbar */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(120, 120, 128, 0.28);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 120, 128, 0.45);
+}
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* Reusable shell */
+.sip-page {
+  padding: 4px 0 8px;
+}
+
+.sip-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.sip-page-header__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--sip-text);
+  letter-spacing: -0.2px;
+}
+
+.sip-page-header__subtitle {
+  font-size: 13px;
+  color: var(--sip-text-2);
+  margin-top: 2px;
+}
+
+.sip-page-header__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Card override — softer rounding & shadow */
+.el-card {
+  border-radius: var(--sip-radius) !important;
+  border-color: var(--sip-border) !important;
+  background: var(--sip-surface) !important;
+  box-shadow: var(--sip-shadow-sm) !important;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.el-card.is-hover-shadow:hover,
+.el-card[shadow="hover"]:hover {
+  box-shadow: var(--sip-shadow) !important;
+}
+
+.el-card__header {
+  border-bottom: 1px solid var(--sip-divider) !important;
+  padding: 14px 18px !important;
+  font-weight: 600;
+  color: var(--sip-text);
+}
+
+.el-card__body { padding: 18px !important; }
+
+/* Tables */
+.el-table {
+  background: transparent !important;
+  --el-table-border-color: var(--sip-divider);
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--sip-surface-2);
+  --el-table-row-hover-bg-color: var(--sip-surface-2);
+  --el-table-text-color: var(--sip-text);
+  --el-table-header-text-color: var(--sip-text-2);
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--sip-text-2) !important;
+  background: var(--sip-surface-2) !important;
+}
+
+.el-table td.el-table__cell {
+  border-bottom: 1px solid var(--sip-divider) !important;
+}
+
+/* Buttons — slightly rounder */
+.el-button {
+  border-radius: 10px !important;
+  font-weight: 500;
+}
+.el-button--small { border-radius: 8px !important; }
+.el-button--large { border-radius: 12px !important; }
+
+/* Inputs */
+.el-input__wrapper, .el-textarea__inner {
+  border-radius: 10px !important;
+  background: var(--sip-surface-2) !important;
+  box-shadow: 0 0 0 1px var(--sip-border) inset !important;
+}
+.el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--sip-border-strong) inset !important;
+}
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--sip-primary) inset !important;
+}
+
+/* Tag */
+.el-tag {
+  border-radius: var(--sip-radius-pill) !important;
+  font-weight: 500;
+  border-width: 0 !important;
+}
+
+/* Dialog & drawer */
+.el-dialog { border-radius: var(--sip-radius-lg) !important; overflow: hidden; }
+.el-drawer { border-radius: var(--sip-radius-lg) 0 0 var(--sip-radius-lg); }
+
+/* Progress thinner */
+.el-progress-bar__outer { border-radius: 999px !important; }
+.el-progress-bar__inner { border-radius: 999px !important; }
+
+/* Menu (sidebar) */
+.el-menu {
+  border-right: none !important;
+  background: transparent !important;
+}
+
+/* Utility */
+.sip-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}

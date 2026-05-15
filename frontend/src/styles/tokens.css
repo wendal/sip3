@@ -1,0 +1,109 @@
+/*
+ * SIP3 Design Tokens — iOS-inspired light & dark themes.
+ * Light theme defined on :root, dark on html.dark.
+ * Element Plus CSS variables are also overridden so built-in components inherit the brand.
+ */
+
+:root {
+  /* Brand colors */
+  --sip-primary: #0a84ff;        /* iOS Blue */
+  --sip-primary-hover: #0070e0;
+  --sip-primary-soft: rgba(10, 132, 255, 0.10);
+  --sip-success: #34c759;        /* iOS Green - answer */
+  --sip-success-soft: rgba(52, 199, 89, 0.12);
+  --sip-danger:  #ff3b30;        /* iOS Red - hangup */
+  --sip-danger-soft: rgba(255, 59, 48, 0.12);
+  --sip-warning: #ff9f0a;
+  --sip-warning-soft: rgba(255, 159, 10, 0.12);
+  --sip-info:    #5ac8fa;
+  --sip-purple:  #af52de;
+
+  /* Surfaces (Light) */
+  --sip-bg:        #f2f2f7;      /* iOS system background */
+  --sip-surface:   #ffffff;
+  --sip-surface-2: #f9f9fb;
+  --sip-surface-elevated: #ffffff;
+  --sip-border:    #e5e5ea;
+  --sip-border-strong: #d1d1d6;
+  --sip-divider:   rgba(60, 60, 67, 0.12);
+
+  /* Text */
+  --sip-text:      #1c1c1e;
+  --sip-text-2:    #6e6e73;
+  --sip-text-3:    #98989f;
+  --sip-text-inverse: #ffffff;
+
+  /* Sidebar */
+  --sip-sidebar-bg: #ffffff;
+  --sip-sidebar-active-bg: rgba(10, 132, 255, 0.10);
+  --sip-sidebar-active-color: var(--sip-primary);
+  --sip-header-bg: rgba(255, 255, 255, 0.85);
+
+  /* Geometry */
+  --sip-radius-sm: 8px;
+  --sip-radius:    14px;
+  --sip-radius-lg: 22px;
+  --sip-radius-pill: 999px;
+
+  --sip-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --sip-shadow:    0 4px 16px rgba(0, 0, 0, 0.06);
+  --sip-shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.18);
+
+  /* Override Element Plus */
+  --el-color-primary: var(--sip-primary);
+  --el-color-primary-light-3: #4ca0ff;
+  --el-color-primary-light-5: #80bbff;
+  --el-color-primary-light-7: #b3d6ff;
+  --el-color-primary-light-9: #e6f1ff;
+  --el-color-primary-dark-2: var(--sip-primary-hover);
+  --el-color-success: var(--sip-success);
+  --el-color-warning: var(--sip-warning);
+  --el-color-danger: var(--sip-danger);
+  --el-color-info: var(--sip-info);
+  --el-border-radius-base: 10px;
+  --el-border-radius-small: 8px;
+  --el-bg-color: var(--sip-surface);
+  --el-bg-color-page: var(--sip-bg);
+  --el-text-color-primary: var(--sip-text);
+  --el-text-color-regular: var(--sip-text-2);
+  --el-text-color-secondary: var(--sip-text-2);
+  --el-border-color: var(--sip-border);
+  --el-border-color-light: var(--sip-border);
+  --el-border-color-lighter: var(--sip-divider);
+  --el-fill-color-blank: var(--sip-surface);
+  --el-fill-color-light: var(--sip-surface-2);
+}
+
+html.dark {
+  --sip-bg:        #000000;
+  --sip-surface:   #1c1c1e;
+  --sip-surface-2: #2c2c2e;
+  --sip-surface-elevated: #2c2c2e;
+  --sip-border:    #38383a;
+  --sip-border-strong: #48484a;
+  --sip-divider:   rgba(255, 255, 255, 0.12);
+
+  --sip-text:      #ffffff;
+  --sip-text-2:    #ebebf5;
+  --sip-text-3:    #98989f;
+
+  --sip-sidebar-bg: #1c1c1e;
+  --sip-sidebar-active-bg: rgba(10, 132, 255, 0.18);
+  --sip-header-bg: rgba(28, 28, 30, 0.85);
+
+  --sip-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --sip-shadow:    0 4px 16px rgba(0, 0, 0, 0.40);
+  --sip-shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.60);
+
+  --el-bg-color: var(--sip-surface);
+  --el-bg-color-page: var(--sip-bg);
+  --el-bg-color-overlay: var(--sip-surface-2);
+  --el-text-color-primary: var(--sip-text);
+  --el-text-color-regular: var(--sip-text-2);
+  --el-border-color: var(--sip-border);
+  --el-border-color-light: var(--sip-border);
+  --el-border-color-lighter: var(--sip-divider);
+  --el-fill-color-blank: var(--sip-surface);
+  --el-fill-color-light: var(--sip-surface-2);
+  --el-fill-color: var(--sip-surface-2);
+}

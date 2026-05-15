@@ -1,66 +1,78 @@
 <template>
-  <div>
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-      <h2 style="margin: 0;">管理员账号</h2>
-      <el-button type="primary" @click="openCreate">
-        <el-icon><Plus /></el-icon> 添加管理员
-      </el-button>
-    </div>
+  <div class="sip-page">
+    <PageHeader title="管理员账号" subtitle="管理后台登录账号，密码使用 bcrypt 哈希存储">
+      <template #actions>
+        <el-button type="primary" :icon="Plus" @click="openCreate">添加管理员</el-button>
+      </template>
+    </PageHeader>
 
     <el-card>
-      <el-table :data="users" v-loading="loading" stripe>
+      <el-table :data="users" v-loading="loading">
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="username" label="用户名" />
-        <el-table-column prop="created_at" label="创建时间" width="180">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="180">
+        <el-table-column prop="username" label="用户名" min-width="160">
           <template #default="{ row }">
-            <el-button size="small" @click="openChangePassword(row)">修改密码</el-button>
-            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+            <div class="username-cell">
+              <div class="username-cell__avatar">{{ (row.username || '?').slice(0, 1).toUpperCase() }}</div>
+              <div class="username-cell__primary">{{ row.username }}</div>
+            </div>
           </template>
         </el-table-column>
+        <el-table-column prop="created_at" label="创建时间" width="200">
+          <template #default="{ row }">
+            <span class="text-secondary">{{ formatDate(row.created_at) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button text type="primary" @click="openChangePassword(row)">修改密码</el-button>
+            <el-button text type="danger" @click="handleDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <EmptyState title="暂无管理员" />
+        </template>
       </el-table>
     </el-card>
 
-    <!-- Create Admin Dialog -->
-    <el-dialog v-model="createDialogVisible" title="添加管理员" width="420px">
-      <el-form :model="createForm" label-width="80px">
+    <el-drawer v-model="createDialogVisible" title="添加管理员" size="400px" direction="rtl">
+      <el-form :model="createForm" label-position="top">
         <el-form-item label="用户名">
           <el-input v-model="createForm.username" placeholder="输入用户名" />
         </el-form-item>
         <el-form-item label="密码">
-          <el-input v-model="createForm.password" type="password" show-password placeholder="至少6位" />
+          <el-input v-model="createForm.password" type="password" show-password placeholder="至少 6 位" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleCreate" :loading="submitting">创建</el-button>
       </template>
-    </el-dialog>
+    </el-drawer>
 
-    <!-- Change Password Dialog -->
-    <el-dialog v-model="pwdDialogVisible" title="修改密码" width="420px">
-      <el-form :model="pwdForm" label-width="100px">
+    <el-drawer v-model="pwdDialogVisible" title="修改密码" size="400px" direction="rtl">
+      <el-form :model="pwdForm" label-position="top">
         <el-form-item label="账号">
-          <span>{{ pwdForm.username }}</span>
+          <span class="text-secondary">{{ pwdForm.username }}</span>
         </el-form-item>
         <el-form-item label="新密码">
-          <el-input v-model="pwdForm.password" type="password" show-password placeholder="至少6位" />
+          <el-input v-model="pwdForm.password" type="password" show-password placeholder="至少 6 位" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="pwdDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleChangePassword" :loading="submitting">确认修改</el-button>
       </template>
-    </el-dialog>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus } from '@element-plus/icons-vue'
 import api from '../utils/api'
+import PageHeader from '../components/PageHeader.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const users = ref([])
 const loading = ref(false)
@@ -142,3 +154,20 @@ const handleDelete = async (row) => {
 
 onMounted(fetchUsers)
 </script>
+
+<style scoped>
+.username-cell { display: flex; align-items: center; gap: 10px; }
+.username-cell__avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--sip-warning), #ff6b35);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+.username-cell__primary { font-weight: 500; color: var(--sip-text); }
+.text-secondary { color: var(--sip-text-2); font-size: 13px; }
+</style>

@@ -1,179 +1,137 @@
 <template>
-  <div>
-    <h2 style="margin-bottom: 20px;">控制台</h2>
+  <div class="sip-page">
+    <PageHeader title="控制台" subtitle="服务器运行概览与近期通话趋势">
+      <template #actions>
+        <el-button :icon="Refresh" @click="refresh" :loading="store.loading">刷新</el-button>
+      </template>
+    </PageHeader>
 
-    <!-- 账号 & 呼叫概览 -->
-    <el-row :gutter="16" style="margin-bottom: 20px;">
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div style="text-align: center;">
-            <div style="font-size: 36px; font-weight: bold; color: #409eff;">{{ store.totalAccounts }}</div>
-            <div style="color: #666; margin-top: 8px;">账号总数</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div style="text-align: center;">
-            <div style="font-size: 36px; font-weight: bold; color: #67c23a;">{{ store.enabledAccounts }}</div>
-            <div style="color: #666; margin-top: 8px;">启用账号</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div style="text-align: center;">
-            <div style="font-size: 36px; font-weight: bold; color: #e6a23c;">{{ store.activeRegistrations }}</div>
-            <div style="color: #666; margin-top: 8px;">当前注册</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div style="text-align: center;">
-            <div style="font-size: 36px; font-weight: bold; color: #f56c6c;">{{ store.activeCalls }}</div>
-            <div style="color: #666; margin-top: 8px;">活跃通话</div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <!-- KPI grid -->
+    <div class="sip-stat-grid kpi-grid">
+      <StatCard :icon="User"        tone="primary" label="账号总数"   :value="store.totalAccounts" />
+      <StatCard :icon="CircleCheck" tone="success" label="启用账号"   :value="store.enabledAccounts" />
+      <StatCard :icon="Connection"  tone="warning" label="当前注册"   :value="store.activeRegistrations" />
+      <StatCard :icon="PhoneFilled" tone="danger"  label="活跃通话"   :value="store.activeCalls" />
+    </div>
 
-    <!-- 通话统计 -->
-    <el-row :gutter="16" style="margin-bottom: 20px;" v-if="store.stats">
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div style="text-align: center;">
-            <div style="font-size: 36px; font-weight: bold; color: #409eff;">{{ store.stats.today.calls }}</div>
-            <div style="color: #666; margin-top: 4px;">今日呼叫</div>
-            <div style="margin-top: 8px;">
-              <el-progress
-                :percentage="answerRate(store.stats.today)"
-                :stroke-width="8"
-                :format="() => `接通 ${store.stats.today.answered}`"
-              />
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div style="text-align: center;">
-            <div style="font-size: 36px; font-weight: bold; color: #67c23a;">{{ store.stats.week.calls }}</div>
-            <div style="color: #666; margin-top: 4px;">近7天呼叫</div>
-            <div style="margin-top: 8px;">
-              <el-progress
-                :percentage="answerRate(store.stats.week)"
-                :stroke-width="8"
-                :format="() => `接通 ${store.stats.week.answered}`"
-              />
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div style="text-align: center;">
-            <div style="font-size: 36px; font-weight: bold; color: #e6a23c;">{{ fmtDuration(store.stats.today.duration_secs) }}</div>
-            <div style="color: #666; margin-top: 8px;">今日通话时长</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div style="text-align: center;">
-            <div style="font-size: 36px; font-weight: bold; color: #909399;">{{ fmtDuration(store.stats.avg_duration_secs) }}</div>
-            <div style="color: #666; margin-top: 8px;">近30天平均时长</div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <div v-if="store.stats" class="sip-stat-grid kpi-grid" style="margin-top: 16px;">
+      <StatCard :icon="Bell"      tone="primary" label="今日呼叫"
+                :value="store.stats.today.calls"
+                :hint="`接通 ${store.stats.today.answered} · ${answerRate(store.stats.today)}%`" />
+      <StatCard :icon="Calendar"  tone="success" label="近7天呼叫"
+                :value="store.stats.week.calls"
+                :hint="`接通 ${store.stats.week.answered} · ${answerRate(store.stats.week)}%`" />
+      <StatCard :icon="Timer"     tone="warning" label="今日通话时长"
+                :value="fmtDuration(store.stats.today.duration_secs)" />
+      <StatCard :icon="DataAnalysis" tone="info" label="近30天平均时长"
+                :value="fmtDuration(store.stats.avg_duration_secs)" />
+    </div>
 
-    <!-- 近24小时逐小时呼叫量 -->
-    <el-row :gutter="16" style="margin-bottom: 20px;" v-if="store.stats">
-      <el-col :span="24">
+    <!-- 24h chart + answer-rate gauge -->
+    <el-row v-if="store.stats" :gutter="16" style="margin-top: 16px;">
+      <el-col :xs="24" :lg="16">
         <el-card>
           <template #header>
-            <span>近24小时呼叫分布</span>
-            <el-button style="float: right;" text @click="store.fetchStats()">
-              <el-icon><Refresh /></el-icon>
-            </el-button>
+            <div class="card-head">
+              <span>近 24 小时呼叫分布</span>
+              <span class="card-head__hint">峰值 {{ maxHourly }} 通</span>
+            </div>
           </template>
-          <div style="display: flex; align-items: flex-end; gap: 4px; height: 80px; padding: 0 4px;">
+          <div class="bar-chart">
             <div
               v-for="(count, hour) in store.stats.hourly_calls"
               :key="hour"
-              style="flex: 1; display: flex; flex-direction: column; align-items: center;"
+              class="bar-col"
+              :title="`${hour}:00 - ${count} 通`"
             >
-              <div style="font-size: 10px; color: #666; margin-bottom: 2px;">{{ count || '' }}</div>
-              <div
-                :style="{
-                  width: '100%',
-                  background: count > 0 ? '#409eff' : '#eee',
-                  borderRadius: '2px 2px 0 0',
-                  height: count > 0 ? `${Math.max(8, Math.round(count / maxHourly * 52))}px` : '4px',
-                  transition: 'height 0.3s',
-                }"
-              />
-              <div style="font-size: 9px; color: #999; margin-top: 2px;">{{ hour % 4 === 0 ? `${hour}:00` : '' }}</div>
+              <div class="bar-col__count">{{ count || '' }}</div>
+              <div class="bar-col__track">
+                <div
+                  class="bar-col__fill"
+                  :class="{ 'bar-col__fill--zero': !count }"
+                  :style="{ height: count > 0 ? `${Math.max(6, Math.round(count / maxHourly * 100))}%` : '4px' }"
+                />
+              </div>
+              <div class="bar-col__label">{{ hour % 4 === 0 ? `${hour}:00` : '' }}</div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :lg="8">
+        <el-card>
+          <template #header>
+            <span>近 7 天接通率</span>
+          </template>
+          <div class="gauge-wrap">
+            <div class="gauge" :style="{ '--p': weeklyAnswerRate }">
+              <div class="gauge__value num">{{ weeklyAnswerRate }}<span class="gauge__pct">%</span></div>
+              <div class="gauge__sub">{{ store.stats.week.answered }} / {{ store.stats.week.calls }}</div>
             </div>
           </div>
         </el-card>
       </el-col>
     </el-row>
 
-    <!-- 注册列表 & 最近通话 -->
-    <el-row :gutter="16" style="margin-bottom: 20px;">
-      <el-col :span="12">
+    <!-- Registrations + recent calls -->
+    <el-row :gutter="16" style="margin-top: 16px;">
+      <el-col :xs="24" :lg="12">
         <el-card>
           <template #header>
-            <span>当前注册</span>
-            <el-button style="float: right;" text @click="store.fetchRegistrations()">
-              <el-icon><Refresh /></el-icon>
-            </el-button>
+            <div class="card-head">
+              <span>当前注册 ({{ store.registrations.length }})</span>
+              <el-button text :icon="Refresh" @click="store.fetchRegistrations()" />
+            </div>
           </template>
-          <el-table :data="store.registrations" size="small">
-            <el-table-column prop="username" label="用户" />
+          <el-table :data="store.registrations" size="small" :max-height="280">
+            <el-table-column prop="username" label="用户" width="100" />
             <el-table-column prop="contact_uri" label="Contact" show-overflow-tooltip />
-            <el-table-column prop="source_ip" label="IP" />
+            <el-table-column prop="source_ip" label="IP" width="120" />
+            <template #empty>
+              <EmptyState title="暂无注册" subtitle="尚无 SIP 客户端注册到本服务器" />
+            </template>
           </el-table>
         </el-card>
       </el-col>
 
-      <el-col :span="12">
+      <el-col :xs="24" :lg="12">
         <el-card>
           <template #header>
-            <span>最近通话</span>
-            <el-button style="float: right;" text @click="store.fetchCalls()">
-              <el-icon><Refresh /></el-icon>
-            </el-button>
+            <div class="card-head">
+              <span>最近通话</span>
+              <el-button text :icon="Refresh" @click="store.fetchCalls()" />
+            </div>
           </template>
-          <el-table :data="store.recentCalls" size="small">
+          <el-table :data="store.recentCalls" size="small" :max-height="280">
             <el-table-column prop="caller" label="主叫" show-overflow-tooltip />
             <el-table-column prop="callee" label="被叫" show-overflow-tooltip />
-            <el-table-column prop="status" label="状态" width="90">
+            <el-table-column label="状态" width="90">
               <template #default="{ row }">
-                <el-tag :type="statusColor(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+                <StatusTag :status="row.status" />
               </template>
             </el-table-column>
+            <template #empty>
+              <EmptyState title="暂无通话" subtitle="发起或接听一次呼叫，将显示在此" />
+            </template>
           </el-table>
         </el-card>
       </el-col>
     </el-row>
 
-    <!-- Top 用户（近7天） -->
-    <el-row :gutter="16" v-if="store.stats && (store.stats.top_callers.length || store.stats.top_callees.length)">
-      <el-col :span="12">
+    <!-- Top callers -->
+    <el-row v-if="store.stats && (store.stats.top_callers.length || store.stats.top_callees.length)"
+            :gutter="16" style="margin-top: 16px;">
+      <el-col :xs="24" :lg="12">
         <el-card>
-          <template #header><span>近7天 Top 主叫</span></template>
+          <template #header><span>近 7 天 Top 主叫</span></template>
           <el-table :data="store.stats.top_callers" size="small">
             <el-table-column prop="user" label="用户" show-overflow-tooltip />
             <el-table-column prop="count" label="拨出次数" width="100" align="right" />
           </el-table>
         </el-card>
       </el-col>
-      <el-col :span="12">
+      <el-col :xs="24" :lg="12">
         <el-card>
-          <template #header><span>近7天 Top 被叫</span></template>
+          <template #header><span>近 7 天 Top 被叫</span></template>
           <el-table :data="store.stats.top_callees" size="small">
             <el-table-column prop="user" label="用户" show-overflow-tooltip />
             <el-table-column prop="count" label="接入次数" width="100" align="right" />
@@ -186,7 +144,15 @@
 
 <script setup>
 import { computed, onMounted } from 'vue'
+import {
+  User, CircleCheck, Connection, PhoneFilled, Refresh,
+  Bell, Calendar, Timer, DataAnalysis,
+} from '@element-plus/icons-vue'
 import { useSipStore } from '../store'
+import PageHeader from '../components/PageHeader.vue'
+import StatCard from '../components/StatCard.vue'
+import StatusTag from '../components/StatusTag.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const store = useSipStore()
 
@@ -200,6 +166,11 @@ const answerRate = (period) => {
   return Math.round((period.answered / period.calls) * 100)
 }
 
+const weeklyAnswerRate = computed(() => {
+  if (!store.stats) return 0
+  return answerRate(store.stats.week)
+})
+
 const fmtDuration = (secs) => {
   if (!secs) return '0s'
   const s = Math.round(secs)
@@ -208,15 +179,112 @@ const fmtDuration = (secs) => {
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`
 }
 
-const statusColor = (status) => {
-  const map = { answered: 'success', ended: 'info', cancelled: 'warning', trying: '', failed: 'danger' }
-  return map[status] || ''
-}
-
-const statusLabel = (status) => {
-  const map = { answered: '接通', ended: '结束', cancelled: '取消', trying: '呼叫中', failed: '失败' }
-  return map[status] || status
-}
+function refresh() { store.fetchAll() }
 
 onMounted(() => store.fetchAll())
 </script>
+
+<style scoped>
+.kpi-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+.card-head__hint {
+  font-size: 12px;
+  color: var(--sip-text-2);
+  font-weight: 400;
+}
+
+/* 24h bar chart */
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 160px;
+  padding: 4px 4px 0;
+}
+.bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.bar-col__count {
+  font-size: 10px;
+  color: var(--sip-text-2);
+  height: 14px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.bar-col__track {
+  width: 100%;
+  height: 110px;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 4px 4px 0 0;
+  background: var(--sip-surface-2);
+}
+.bar-col__fill {
+  width: 100%;
+  background: linear-gradient(180deg, var(--sip-primary) 0%, #5e5ce6 100%);
+  border-radius: 4px 4px 0 0;
+  transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.bar-col__fill--zero {
+  background: var(--sip-border);
+}
+.bar-col__label {
+  font-size: 9px;
+  color: var(--sip-text-3);
+  margin-top: 4px;
+  height: 12px;
+  line-height: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Gauge (CSS conic) */
+.gauge-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0;
+}
+.gauge {
+  --size: 160px;
+  width: var(--size); height: var(--size);
+  border-radius: 50%;
+  position: relative;
+  background:
+    conic-gradient(var(--sip-success) calc(var(--p) * 1%), var(--sip-surface-2) 0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+.gauge::before {
+  content: '';
+  position: absolute;
+  inset: 12px;
+  border-radius: 50%;
+  background: var(--sip-surface);
+}
+.gauge__value {
+  position: relative;
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--sip-text);
+  letter-spacing: -1px;
+}
+.gauge__pct { font-size: 14px; font-weight: 500; color: var(--sip-text-2); margin-left: 2px; }
+.gauge__sub {
+  position: relative;
+  font-size: 12px;
+  color: var(--sip-text-2);
+  margin-top: 2px;
+}
+</style>
