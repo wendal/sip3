@@ -23,7 +23,7 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 - ✅ SIP REGISTER — RFC 3261 MD5 Digest Authentication
 - ✅ SIP INVITE proxy/B2BUA — looks up registration, rewrites SDP, relays RTP
 - ✅ **Audio conference rooms** — local B2BUA endpoint with server-side G.711 (PCMU/PCMA) mixer; dial e.g. `sip:900000000@<domain>`; `*6` DTMF (RFC 2833 or SIP INFO) toggles mute. MVP is SIP UDP/TLS only — no SRTP/video/WebRTC, no PIN.
-- ✅ **Voicemail** — mailbox recording for offline users and unanswered calls (default 25 s), `*97` mailbox access, and MWI via `SUBSCRIBE Event: message-summary`. MVP supports G.711 PCMU/PCMA RTP/AVP only; no PIN, busy-to-voicemail, email notifications, SRTP, Opus, or browser/WebRTC voicemail.
+- ✅ **Voicemail** — mailbox recording for offline users and unanswered calls (default 25 s), basic `*97` mailbox access/greeting readiness, and MWI via `SUBSCRIBE Event: message-summary`. MVP supports G.711 PCMU/PCMA RTP/AVP only; full playback IVR/navigation, PIN, busy-to-voicemail, email notifications, SRTP, Opus, and browser/WebRTC voicemail are future work.
 - ✅ SIP BYE / CANCEL / INFO bidirectional routing
 - ✅ SIP REFER + NOTIFY — blind call transfer
 - ✅ SIP SUBSCRIBE / NOTIFY — Presence & BLF (busy lamp field)
@@ -155,13 +155,13 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 ### Voicemail
 
 - **Delivery**: if an enabled mailbox's owner is offline, SIP3 answers immediately and records a message. If the owner is registered but does not answer, SIP3 sends the call to voicemail after `SIP3__SERVER__VOICEMAIL_NO_ANSWER_SECS` (default 25 seconds).
-- **Mailbox access**: users dial `*97` from their own SIP account to play mailbox prompts and messages.
+- **Mailbox access**: users dial `*97` from their own SIP account to reach the mailbox endpoint and greeting/ready prompt. Full message playback and mailbox navigation are future work.
 - **Codecs**: voicemail accepts G.711 PCMU/PCMA on RTP/AVP only. SRTP/SAVP, Opus, video, and browser/WebRTC voicemail are not supported in the MVP.
 - **MWI**: SIP phones can subscribe with `SUBSCRIBE Event: message-summary`; SIP3 sends `NOTIFY` updates with new/saved message counts.
 - **Storage**: recordings are WAV files under `SIP3__SERVER__VOICEMAIL_STORAGE_DIR` (Docker default `/app/voicemail`, host mount `./voicemail`). Prompt WAV files are read from `SIP3__SERVER__VOICEMAIL_PROMPT_DIR` (default `voicemail/prompts`).
 - **RTP ports**: voicemail media uses UDP `10200-10299` by default (`SIP3__SERVER__VOICEMAIL_RTP_PORT_MIN/MAX`). Open and Docker-map this range separately from call relay and conference RTP.
-- **DTMF menu**: `1` replays the current message; `2` or `#` saves/skips to the next message; `7` deletes; `9` saves; `*` exits or returns to the previous menu.
-- **MVP exclusions**: mailbox PINs, busy-to-voicemail routing, email notifications, SRTP, Opus, and browser/WebRTC voicemail.
+- **DTMF controls**: current MVP DTMF support is limited to `#` stopping an active recording. Playback menu controls such as `1` replay, `2`/`#` next, `7` delete, `9` save, and `*` back/exit are planned but not implemented yet.
+- **MVP exclusions**: full message playback IVR/navigation/save/delete, mailbox PINs, busy-to-voicemail routing, email notifications, SRTP, Opus, and browser/WebRTC voicemail.
 
 ### Configuration
 
@@ -249,7 +249,7 @@ SIP3 是一个功能完整的 SIP 代理/注册服务器，使用 Rust 构建后
 - ✅ SIP REGISTER — RFC 3261 MD5 摘要认证
 - ✅ SIP INVITE 代理/B2BUA — 查找注册、重写 SDP、中继 RTP
 - ✅ **音频会议室** — 本地 B2BUA 端点，服务端 G.711 (PCMU/PCMA) 混音；拨打如 `sip:900000000@<域>` 入会；`*6` DTMF（RFC 2833 或 SIP INFO）切换静音。MVP 仅支持 SIP UDP/TLS，不支持 SRTP/视频/WebRTC，无 PIN。
-- ✅ **语音信箱** — 离线用户和无人接听（默认 25 秒）转入本地录音；用户拨打 `*97` 进入信箱；支持 `SUBSCRIBE Event: message-summary` 消息等待指示（MWI）。MVP 仅支持 G.711 PCMU/PCMA RTP/AVP，不支持 PIN、忙线转信箱、邮件通知、SRTP、Opus 或浏览器/WebRTC 语音信箱。
+- ✅ **语音信箱** — 离线用户和无人接听（默认 25 秒）转入本地录音；用户拨打 `*97` 可进入基础信箱端点/问候提示；支持 `SUBSCRIBE Event: message-summary` 消息等待指示（MWI）。MVP 仅支持 G.711 PCMU/PCMA RTP/AVP；完整播放 IVR/导航、PIN、忙线转信箱、邮件通知、SRTP、Opus 或浏览器/WebRTC 语音信箱均为后续工作。
 - ✅ SIP BYE / CANCEL / INFO 双向路由
 - ✅ SIP REFER + NOTIFY — 盲转呼叫
 - ✅ SIP SUBSCRIBE / NOTIFY — 在线状态与 BLF（忙灯显示）
@@ -350,13 +350,13 @@ SIP 电话(TLS) ──TLS 5061──┘         │
 ### 语音信箱
 
 - **投递规则**：启用信箱的用户离线时立即接入语音信箱；在线但无人接听时，默认 25 秒后接入（`SIP3__SERVER__VOICEMAIL_NO_ANSWER_SECS`）。
-- **信箱访问**：用户从自己的 SIP 账号拨打 `*97` 收听提示音和留言。
+- **信箱访问**：用户从自己的 SIP 账号拨打 `*97` 可进入信箱端点并听到问候/就绪提示；完整留言播放和信箱导航为后续工作。
 - **编解码**：仅支持 G.711 PCMU/PCMA RTP/AVP；MVP 不支持 SRTP/SAVP、Opus、视频或浏览器/WebRTC 语音信箱。
 - **MWI**：终端可发送 `SUBSCRIBE Event: message-summary` 订阅消息等待指示，SIP3 通过 `NOTIFY` 推送新/已保存留言数量。
 - **存储目录**：留言以 WAV 文件保存在 `SIP3__SERVER__VOICEMAIL_STORAGE_DIR`（Docker 默认 `/app/voicemail`，宿主机挂载 `./voicemail`）；提示音从 `SIP3__SERVER__VOICEMAIL_PROMPT_DIR` 读取（默认 `voicemail/prompts`）。
 - **RTP 端口**：语音信箱媒体默认使用 UDP `10200-10299`（`SIP3__SERVER__VOICEMAIL_RTP_PORT_MIN/MAX`），需单独放行并映射。
-- **DTMF 菜单**：`1` 重播当前留言；`2` 或 `#` 保存/跳到下一条；`7` 删除；`9` 保存；`*` 退出或返回上级菜单。
-- **MVP 不包含**：信箱 PIN、忙线转信箱、邮件通知、SRTP、Opus、浏览器/WebRTC 语音信箱。
+- **DTMF 控制**：当前 MVP 仅支持录音过程中按 `#` 停止录音。播放菜单中的 `1` 重播、`2`/`#` 下一条、`7` 删除、`9` 保存、`*` 返回/退出尚未实现，属于计划功能。
+- **MVP 不包含**：完整留言播放 IVR/导航/保存/删除、信箱 PIN、忙线转信箱、邮件通知、SRTP、Opus、浏览器/WebRTC 语音信箱。
 
 ### 开发说明
 

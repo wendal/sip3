@@ -66,7 +66,7 @@ api_port = 3000
 public_ip = "154.8.159.79"
 # UDP port range for RTP media relay
 rtp_port_min = 10000
-rtp_port_max = 20000
+rtp_port_max = 10099
 # UDP port range for conference mixing
 conference_rtp_port_min = 10100
 conference_rtp_port_max = 10199
@@ -152,12 +152,12 @@ SIP3 hosts audio conference rooms as a local B2BUA endpoint with server-side mix
 SIP3 provides local voicemail mailboxes for SIP phone users.
 
 - Delivery: calls to enabled mailboxes are answered immediately when the user is offline. For registered users who do not answer, voicemail answers after `voicemail_no_answer_secs` (default 25 seconds).
-- Access: mailbox owners dial `*97` from their own extension.
-- Codecs: G.711 PCMU/PCMA over RTP/AVP only. The voicemail MVP excludes SRTP/SAVP, Opus, video, browser/WebRTC voicemail, mailbox PINs, busy-to-voicemail routing, and email notifications.
+- Access: mailbox owners dial `*97` from their own extension to reach the mailbox endpoint and greeting/ready prompt. Full message playback and mailbox navigation are future work.
+- Codecs: G.711 PCMU/PCMA over RTP/AVP only. The voicemail MVP excludes SRTP/SAVP, Opus, video, browser/WebRTC voicemail, full playback IVR/navigation, mailbox PINs, busy-to-voicemail routing, and email notifications.
 - MWI: phones subscribe with `SUBSCRIBE Event: message-summary`; SIP3 sends `NOTIFY` (`application/simple-message-summary`) as new/saved counts change.
 - Storage: messages are local WAV files under `voicemail_storage_dir`; prompts are WAV files under `voicemail_prompt_dir`. Docker Compose sets these to `/app/voicemail` and `/app/voicemail/prompts` and mounts host `./voicemail`.
 - RTP: voicemail media uses `voicemail_rtp_port_min`–`voicemail_rtp_port_max` (defaults `10200`–`10299`). Open and map this UDP range independently from relay RTP (`10000`–`10099`) and conference RTP (`10100`–`10199`).
-- DTMF menu: `1` replay, `2` or `#` save/next, `7` delete, `9` save, `*` exit/back. RFC 2833 telephone-event RTP and SIP `INFO application/dtmf-relay` are recognized.
+- DTMF controls: current MVP DTMF support is limited to `#` stopping an active recording. Playback controls (`1` replay, `2`/`#` next, `7` delete, `9` save, `*` exit/back) are planned but not implemented yet. RFC 2833 telephone-event RTP and SIP `INFO application/dtmf-relay` are recognized for the implemented recording stop control.
 - Admin UI/API: manage boxes and messages in the admin UI. API routes are `GET/POST /api/voicemail/boxes`, `PUT /api/voicemail/boxes/:id`, `GET /api/voicemail/messages`, `PUT/DELETE /api/voicemail/messages/:id`, and `GET /api/voicemail/messages/:id/download`.
 
 ## SIP Client Configuration
