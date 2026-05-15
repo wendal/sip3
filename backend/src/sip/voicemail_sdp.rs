@@ -123,37 +123,38 @@ pub fn negotiate_offer(sdp: &str) -> Result<VoicemailNegotiation> {
         }
     };
 
-    let mut chosen: Option<(VoicemailCodec, u8)> = None;
+    let mut pcmu_candidate: Option<u8> = None;
+    let mut pcma_candidate: Option<u8> = None;
     let mut telephone_event_pt: Option<u8> = None;
 
-    // Prefer PCMU first, then PCMA
+    // Single pass: record PCMU, PCMA fallback, and telephone-event independently
     for pt in &audio_pts {
         match resolve(*pt) {
-            Some(("PCMU", 8000)) if chosen.is_none() => {
-                chosen = Some((VoicemailCodec::Pcmu, *pt));
+            Some(("PCMU", 8000)) => {
+                pcmu_candidate = Some(*pt);
             }
-            Some(("telephone-event", 8000)) if telephone_event_pt.is_none() => {
-                telephone_event_pt = Some(*pt);
+            Some(("PCMA", 8000)) => {
+                if pcma_candidate.is_none() {
+                    pcma_candidate = Some(*pt);
+                }
+            }
+            Some(("telephone-event", 8000)) => {
+                if telephone_event_pt.is_none() {
+                    telephone_event_pt = Some(*pt);
+                }
             }
             _ => {}
         }
     }
 
-    // Second pass for PCMA if PCMU wasn't found
-    if chosen.is_none() {
-        for pt in &audio_pts {
-            match resolve(*pt) {
-                Some(("PCMA", 8000)) => {
-                    chosen = Some((VoicemailCodec::Pcma, *pt));
-                    break;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let (codec, audio_pt) =
-        chosen.ok_or_else(|| anyhow!("no PCMU or PCMA payload type offered for audio"))?;
+    // Prefer PCMU, fallback to PCMA
+    let (codec, audio_pt) = if let Some(pt) = pcmu_candidate {
+        (VoicemailCodec::Pcmu, pt)
+    } else if let Some(pt) = pcma_candidate {
+        (VoicemailCodec::Pcma, pt)
+    } else {
+        return Err(anyhow!("no PCMU or PCMA payload type offered for audio"));
+    };
 
     Ok(VoicemailNegotiation {
         codec,
@@ -171,7 +172,8 @@ pub fn build_answer(
 ) -> String {
     let mut pts = negotiation.audio_pt.to_string();
     if let Some(dtmf_pt) = negotiation.telephone_event_pt {
-        pts.push_str(&format!(" {}", dtmf_pt));
+        pts.push(' ');
+        pts.push_str(&dtmf_pt.to_string());
     }
     let mut sdp = String::new();
     sdp.push_str("v=0\r\n");
@@ -217,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_answer_with_content_codec() {
+    fn answer_includes_codec_and_dtmf() {
         let n = VoicemailNegotiation {
             codec: VoicemailCodec::Pcma,
             audio_pt: 8,
@@ -227,5 +229,50 @@ mod tests {
         assert!(answer.contains("m=audio 10200 RTP/AVP 8 101"));
         assert!(answer.contains("a=rtpmap:8 PCMA/8000"));
         assert!(answer.contains("a=rtpmap:101 telephone-event/8000"));
+        assert!(answer.contains("a=fmtp:101 0-15"));
+        assert!(answer.contains("s=SIP3 Voicemail"));
+    }
+
+    #[test]
+    fn answer_without_dtmf_omits_telephone_event() {
+        let n = VoicemailNegotiation {
+            codec: VoicemailCodec::Pcmu,
+            audio_pt: 0,
+            telephone_event_pt: None,
+        };
+        let answer = build_answer("203.0.113.10", 10200, &n, 1234);
+        assert!(answer.contains("m=audio 10200 RTP/AVP 0\r\n"));
+        assert!(answer.contains("a=rtpmap:0 PCMU/8000"));
+        assert!(!answer.contains("telephone-event"));
+    }
+
+    #[test]
+    fn captures_dtmf_when_pcma_listed_before_pcmu() {
+        let offer = "v=0\r\nm=audio 5000 RTP/AVP 8 101 0\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:101 telephone-event/8000\r\na=rtpmap:0 PCMU/8000\r\n";
+        let n = negotiate_offer(offer).expect("negotiate");
+        assert_eq!(n.codec, VoicemailCodec::Pcmu);
+        assert_eq!(n.audio_pt, 0);
+        assert_eq!(n.telephone_event_pt, Some(101));
+    }
+
+    #[test]
+    fn picks_pcmu_over_pcma_when_pcma_first() {
+        let offer = "v=0\r\nm=audio 5000 RTP/AVP 8 0\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:0 PCMU/8000\r\n";
+        let n = negotiate_offer(offer).expect("negotiate");
+        assert_eq!(n.codec, VoicemailCodec::Pcmu);
+        assert_eq!(n.audio_pt, 0);
+        assert_eq!(n.telephone_event_pt, None);
+    }
+
+    #[test]
+    fn rejects_offer_without_g711() {
+        let offer = "v=0\r\nm=audio 5000 RTP/AVP 96\r\na=rtpmap:96 opus/48000/2\r\n";
+        assert!(negotiate_offer(offer).is_err());
+    }
+
+    #[test]
+    fn rejects_offer_without_audio() {
+        let offer = "v=0\r\nm=video 5000 RTP/AVP 96\r\n";
+        assert!(negotiate_offer(offer).is_err());
     }
 }
