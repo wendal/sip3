@@ -27,6 +27,7 @@ pub mod security;
 pub mod stats;
 pub mod status;
 pub mod turn;
+pub mod voicemail;
 
 /// Combined application state passed to all handlers
 #[derive(Clone)]
@@ -184,6 +185,23 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .route(
             "/api/conferences/:id/participants",
             get(conferences::list_participants),
+        )
+        .route(
+            "/api/voicemail/boxes",
+            get(voicemail::list_boxes).post(voicemail::create_box),
+        )
+        .route(
+            "/api/voicemail/boxes/:id",
+            put(voicemail::update_box),
+        )
+        .route("/api/voicemail/messages", get(voicemail::list_messages))
+        .route(
+            "/api/voicemail/messages/:id",
+            put(voicemail::update_message).delete(voicemail::delete_message),
+        )
+        .route(
+            "/api/voicemail/messages/:id/download",
+            get(voicemail::download_message),
         )
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
