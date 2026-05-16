@@ -1,11 +1,15 @@
 use anyhow::Result;
 use sqlx::MySqlPool;
 use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
+
+pub const INVITE_AUTO_BAN_DESCRIPTION: &str = "auto-ban: invalid sip invite abuse";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthSurface {
     SipRegister,
+    SipInvite,
     ApiLogin,
 }
 
@@ -13,6 +17,7 @@ impl AuthSurface {
     pub fn as_db_value(self) -> &'static str {
         match self {
             AuthSurface::SipRegister => "sip_register",
+            AuthSurface::SipInvite => "sip_invite",
             AuthSurface::ApiLogin => "api_login",
         }
     }
@@ -21,6 +26,7 @@ impl AuthSurface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityEventType {
     AuthFailed,
+    InviteRejected,
     IpBlocked,
     AuthSucceeded,
     IpUnblocked,
@@ -30,6 +36,7 @@ impl SecurityEventType {
     pub fn as_db_value(self) -> &'static str {
         match self {
             SecurityEventType::AuthFailed => "auth_failed",
+            SecurityEventType::InviteRejected => "invite_rejected",
             SecurityEventType::IpBlocked => "ip_blocked",
             SecurityEventType::AuthSucceeded => "auth_succeeded",
             SecurityEventType::IpUnblocked => "ip_unblocked",
@@ -173,6 +180,32 @@ pub async fn persist_security_event(
     .bind(source_ip)
     .bind(username)
     .bind(detail)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn persist_acl_ban(
+    pool: &MySqlPool,
+    ip: IpAddr,
+    priority: i32,
+    description: &str,
+) -> Result<()> {
+    let cidr = match ip {
+        IpAddr::V4(v4) => format!("{}/32", v4),
+        IpAddr::V6(v6) => format!("{}/128", v6),
+    };
+    sqlx::query(
+        "INSERT INTO sip_acl (action, cidr, description, priority, enabled)
+         SELECT 'deny', ?, ?, ?, 1
+         WHERE NOT EXISTS (
+             SELECT 1 FROM sip_acl WHERE action = 'deny' AND cidr = ? AND enabled = 1
+         )",
+    )
+    .bind(&cidr)
+    .bind(description)
+    .bind(priority)
+    .bind(&cidr)
     .execute(pool)
     .await?;
     Ok(())

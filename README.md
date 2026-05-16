@@ -142,8 +142,8 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | PUT/DELETE | /api/voicemail/messages/:id | Update or soft-delete a message    |
 | GET    | /api/voicemail/messages/:id/download | Download message WAV audio |
 | GET    | /api/stats                 | Dashboard statistics                  |
-| GET    | /api/security/summary      | Security summary (24h failures/blocks) |
-| GET    | /api/security/events       | Security event timeline               |
+| GET    | /api/security/summary      | Security summary (24h auth + INVITE abuse) |
+| GET    | /api/security/events       | Security event timeline / filterable by surface |
 | GET    | /api/security/blocks       | Active auto-ban ACL entries           |
 | POST   | /api/security/blocks/unblock | Disable one auto-ban entry          |
 | GET    | /api/security/runtime      | Runtime troubleshooting snapshot      |
@@ -198,6 +198,8 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | SIP3__SECURITY__WINDOW_SECS       | 300            | Sliding window for auth-fail counters |
 | SIP3__SECURITY__SIP_IP_FAIL_THRESHOLD | 20        | REGISTER failures/IP before block      |
 | SIP3__SECURITY__SIP_USER_IP_FAIL_THRESHOLD | 8    | REGISTER failures/IP+user before block |
+| SIP3__SECURITY__SIP_INVITE_IP_FAIL_THRESHOLD | 10 | Rejected INVITEs/IP before block       |
+| SIP3__SECURITY__SIP_INVITE_USER_IP_FAIL_THRESHOLD | 3 | Rejected INVITEs/IP+caller before block |
 | SIP3__SECURITY__API_IP_FAIL_THRESHOLD | 20        | Admin login failures/IP before block    |
 | SIP3__SECURITY__API_USER_IP_FAIL_THRESHOLD | 8    | Admin login failures/IP+user before block |
 | SIP3__SECURITY__BLOCK_SECS        | 900            | Auto-ban duration (seconds)            |
@@ -209,6 +211,8 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | SIP3__TURN__SERVER                | (empty)        | TURN server URI (returned to client)|
 
 > **Important**: set `SIP3__SERVER__PUBLIC_IP` to a **numeric public IPv4** (for example `154.8.159.79`) to avoid SIP endpoint compatibility issues caused by domain names inside SDP `c=IN IP4`.
+
+For public-facing SIP servers without trusted inbound trunks, keep the new INVITE thresholds enabled so repeated `INVITE from unrecognised caller` scans are auto-banned and show up as `surface=sip_invite` / `event_type=invite_rejected` in `/api/security/events`.
 
 ### Development
 

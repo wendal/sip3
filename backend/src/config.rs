@@ -92,6 +92,10 @@ pub struct SecurityConfig {
     pub sip_ip_fail_threshold: u32,
     /// Failed REGISTER attempts for same IP+username needed to trigger a block.
     pub sip_user_ip_fail_threshold: u32,
+    /// Rejected INVITEs from the same IP needed to trigger a block.
+    pub sip_invite_ip_fail_threshold: u32,
+    /// Rejected INVITEs for the same IP+username needed to trigger a block.
+    pub sip_invite_user_ip_fail_threshold: u32,
     /// Failed admin login attempts from the same IP needed to trigger a block.
     pub api_ip_fail_threshold: u32,
     /// Failed admin login attempts for same IP+username needed to trigger a block.
@@ -167,6 +171,8 @@ impl Config {
             .set_default("security.window_secs", 300)?
             .set_default("security.sip_ip_fail_threshold", 20)?
             .set_default("security.sip_user_ip_fail_threshold", 8)?
+            .set_default("security.sip_invite_ip_fail_threshold", 10)?
+            .set_default("security.sip_invite_user_ip_fail_threshold", 3)?
             .set_default("security.api_ip_fail_threshold", 20)?
             .set_default("security.api_user_ip_fail_threshold", 8)?
             .set_default("security.block_secs", 900)?

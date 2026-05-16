@@ -14,7 +14,7 @@ use super::handler::{
 use super::presence::{Presence, PresenceStatus};
 use crate::config::Config;
 use crate::security_guard::{
-    AuthSurface, SecurityEventType, SecurityGuard, persist_security_event,
+    AuthSurface, SecurityEventType, SecurityGuard, persist_acl_ban, persist_security_event,
 };
 
 pub const ACCOUNT_LOOKUP_SQL: &str = "\
@@ -365,32 +365,6 @@ fn unauthorized_response(msg: &SipMessage, domain: &str, nonce_secret: &str) -> 
     Ok(base_response(msg, 401, "Unauthorized")
         .header("WWW-Authenticate", &make_www_authenticate(domain, &nonce))
         .build())
-}
-
-async fn persist_acl_ban(
-    pool: &MySqlPool,
-    ip: IpAddr,
-    priority: i32,
-    description: &str,
-) -> Result<()> {
-    let cidr = match ip {
-        IpAddr::V4(v4) => format!("{}/32", v4),
-        IpAddr::V6(v6) => format!("{}/128", v6),
-    };
-    sqlx::query(
-        "INSERT INTO sip_acl (action, cidr, description, priority, enabled)
-         SELECT 'deny', ?, ?, ?, 1
-         WHERE NOT EXISTS (
-             SELECT 1 FROM sip_acl WHERE action = 'deny' AND cidr = ? AND enabled = 1
-         )",
-    )
-    .bind(&cidr)
-    .bind(description)
-    .bind(priority)
-    .bind(&cidr)
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 /// Generate an HMAC-MD5 signed nonce:

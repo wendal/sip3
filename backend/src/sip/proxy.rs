@@ -19,6 +19,10 @@ use super::transport::TransportRegistry;
 use super::voicemail::Voicemail;
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
+use crate::security_guard::{
+    AuthSurface, INVITE_AUTO_BAN_DESCRIPTION, SecurityEventType, SecurityGuard, persist_acl_ban,
+    persist_security_event,
+};
 
 pub const CALLER_ACCOUNT_EXISTS_SQL: &str = "\
     SELECT 1 FROM sip_accounts
@@ -162,6 +166,7 @@ pub struct Proxy {
     webrtc_gateway: Arc<WebRtcGateway>,
     transport_registry: TransportRegistry,
     voicemail: Voicemail,
+    invite_guard: Arc<tokio::sync::Mutex<SecurityGuard>>,
 }
 
 impl Proxy {
@@ -175,6 +180,7 @@ impl Proxy {
         webrtc_gateway: Arc<WebRtcGateway>,
         transport_registry: TransportRegistry,
         voicemail: Voicemail,
+        invite_guard: Arc<tokio::sync::Mutex<SecurityGuard>>,
     ) -> Self {
         Self {
             pool,
@@ -186,6 +192,7 @@ impl Proxy {
             webrtc_gateway,
             transport_registry,
             voicemail,
+            invite_guard,
         }
     }
 
@@ -199,6 +206,7 @@ impl Proxy {
             .unwrap_or_else(|| "unknown".to_string());
         let call_id = msg.call_id().unwrap_or("").to_string();
         let domain = self.cfg.server.sip_domain.clone();
+        let source_ip = src.ip().to_string();
 
         if callee.is_empty() {
             return Ok(base_response(msg, 400, "Bad Request").build());
@@ -212,23 +220,39 @@ impl Proxy {
             return Ok(base_response(msg, 483, "Too Many Hops").build());
         }
 
+        if self.invite_guard.lock().await.is_blocked(&source_ip) {
+            warn!("INVITE blocked by guard from {}", source_ip);
+            return Ok(base_response(msg, 403, "Forbidden").build());
+        }
+
         // Verify the caller has an enabled account in our domain before
         // proxying any calls — prevents unauthenticated call injection.
-        if caller != "unknown" {
-            let caller_ok: Option<(i32,)> = sqlx::query_as(CALLER_ACCOUNT_EXISTS_SQL)
-                .bind(&caller)
-                .bind(&domain)
-                .fetch_optional(&self.pool)
-                .await?;
-
-            if caller_ok.is_none() {
-                warn!("INVITE from unrecognised caller: {}@{}", caller, domain);
-                return Ok(base_response(msg, 403, "Forbidden").build());
-            }
-
-            self.refresh_sender_registration_source(&caller, &domain, src)
-                .await?;
+        if caller == "unknown" {
+            return self
+                .reject_invalid_invite(msg, src, None, "invite rejected: missing caller identity")
+                .await;
         }
+
+        let caller_ok: Option<(i32,)> = sqlx::query_as(CALLER_ACCOUNT_EXISTS_SQL)
+            .bind(&caller)
+            .bind(&domain)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if caller_ok.is_none() {
+            warn!("INVITE from unrecognised caller: {}@{}", caller, domain);
+            return self
+                .reject_invalid_invite(
+                    msg,
+                    src,
+                    Some(&caller),
+                    &format!("invite rejected: unrecognised caller {}@{}", caller, domain),
+                )
+                .await;
+        }
+
+        self.refresh_sender_registration_source(&caller, &domain, src)
+            .await?;
 
         // Look up callee's registration
         let row: Option<(String, String, u16)> = sqlx::query_as(
@@ -465,6 +489,61 @@ impl Proxy {
         }
 
         Ok(())
+    }
+
+    async fn reject_invalid_invite(
+        &self,
+        msg: &SipMessage,
+        src: SocketAddr,
+        caller: Option<&str>,
+        detail: &str,
+    ) -> Result<String> {
+        let source_ip = src.ip().to_string();
+        let blocked = self.invite_guard.lock().await.record_failure(
+            AuthSurface::SipInvite,
+            &source_ip,
+            caller,
+        );
+        if let Err(e) = persist_security_event(
+            &self.pool,
+            AuthSurface::SipInvite,
+            SecurityEventType::InviteRejected,
+            &source_ip,
+            caller,
+            detail,
+        )
+        .await
+        {
+            warn!("Failed to persist security event: {}", e);
+        }
+        if blocked && self.cfg.security.persist_acl_bans {
+            if let Err(e) = persist_acl_ban(
+                &self.pool,
+                src.ip(),
+                self.cfg.security.acl_ban_priority,
+                INVITE_AUTO_BAN_DESCRIPTION,
+            )
+            .await
+            {
+                warn!(
+                    "Failed to persist INVITE auto-ban ACL for {}: {}",
+                    source_ip, e
+                );
+            }
+            if let Err(e) = persist_security_event(
+                &self.pool,
+                AuthSurface::SipInvite,
+                SecurityEventType::IpBlocked,
+                &source_ip,
+                caller,
+                "invite source blocked by threshold",
+            )
+            .await
+            {
+                warn!("Failed to persist security event: {}", e);
+            }
+        }
+        Ok(base_response(msg, 403, "Forbidden").build())
     }
 
     async fn lookup_registered_target(&self, username: &str, domain: &str) -> Option<SocketAddr> {

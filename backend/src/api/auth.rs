@@ -10,7 +10,9 @@ use tracing::warn;
 
 use super::{AppState, jwt};
 use crate::models::AdminUser;
-use crate::security_guard::{AuthSurface, SecurityEventType, persist_security_event};
+use crate::security_guard::{
+    AuthSurface, SecurityEventType, persist_acl_ban, persist_security_event,
+};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct LoginRequest {
@@ -209,32 +211,6 @@ fn extract_client_ip(headers: &HeaderMap) -> String {
 
 fn parse_ip(raw: &str) -> Option<IpAddr> {
     raw.parse().ok()
-}
-
-async fn persist_acl_ban(
-    pool: &sqlx::MySqlPool,
-    ip: IpAddr,
-    priority: i32,
-    description: &str,
-) -> anyhow::Result<()> {
-    let cidr = match ip {
-        IpAddr::V4(v4) => format!("{}/32", v4),
-        IpAddr::V6(v6) => format!("{}/128", v6),
-    };
-    sqlx::query(
-        "INSERT INTO sip_acl (action, cidr, description, priority, enabled)
-         SELECT 'deny', ?, ?, ?, 1
-         WHERE NOT EXISTS (
-             SELECT 1 FROM sip_acl WHERE action = 'deny' AND cidr = ? AND enabled = 1
-         )",
-    )
-    .bind(&cidr)
-    .bind(description)
-    .bind(priority)
-    .bind(&cidr)
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]
