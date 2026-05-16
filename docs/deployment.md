@@ -6,7 +6,7 @@
 - `skopeo` installed on the Harbor sync host that runs `scripts/sync-from-ghcr.sh`
 - Access to the Harbor registry at `harbor.air32.cn`
 - A host-specific `.env` file copied from `.env.example`
-- `docker login harbor.air32.cn` credentials for the deploy user
+- `docker login harbor.air32.cn` credentials with Harbor push/pull access for the deploy user
 
 Rust and Node.js are only needed for local source builds with the development compose overlay.
 
@@ -78,7 +78,7 @@ cd /opt/sip3
 docker login harbor.air32.cn
 ```
 
-Use a Harbor robot account with push/pull access before running `scripts/sync-from-ghcr.sh`. The same host can reuse the cached Harbor credentials for later `docker compose pull` runs.
+Use a Harbor robot account with push/pull access before running `scripts/sync-from-ghcr.sh`. Those same Harbor credentials are also used later by production `docker compose pull` on this host.
 
 ### 3. Sync the selected tag into Harbor
 
@@ -96,7 +96,10 @@ skopeo inspect docker://harbor.air32.cn/sip3/frontend:git-<shortsha>
 ### 5. Deploy from Harbor only
 
 ```bash
-export IMAGE_TAG=git-<shortsha>
+grep -q '^IMAGE_TAG=' .env \
+  && sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=git-<shortsha>/" .env \
+  || echo "IMAGE_TAG=git-<shortsha>" >> .env
+grep '^IMAGE_TAG=' .env
 docker compose pull
 docker compose up -d
 docker compose ps
@@ -106,7 +109,10 @@ curl -f http://127.0.0.1:3000/api/health
 ### 6. Roll back
 
 ```bash
-export IMAGE_TAG=<previous-good-tag>
+grep -q '^IMAGE_TAG=' .env \
+  && sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=<previous-good-tag>/" .env \
+  || echo "IMAGE_TAG=<previous-good-tag>" >> .env
+grep '^IMAGE_TAG=' .env
 docker compose pull
 docker compose up -d
 docker compose ps
