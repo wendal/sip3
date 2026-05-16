@@ -15,7 +15,7 @@ copy_image() {
 
 inspect_image() {
   local name="$1"
-  "$SKOPEO_BIN" inspect "docker://${DST_PREFIX}/${name}:${TAG}"
+  "$SKOPEO_BIN" inspect "docker://${DST_PREFIX}/${name}:${TAG}" >/dev/null
 }
 
 copy_image backend
