@@ -4,8 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [v1.3.0] - 2026-05-16
+
 ### Added
 - Added legacy SIP phone audio+video RTP/SRTP relay support by rewriting and relaying active `m=audio` and `m=video` SDP sections.
+- Added Linphone-compatible audio conference rooms with a local SIP endpoint, G.711 PCMU/PCMA mixer, `*6` mute via RFC 2833/SIP INFO, admin API/UI, and a dedicated RTP range.
+- Added voicemail MVP with offline/no-answer recording, local WAV storage, MWI `message-summary` SUBSCRIBE/NOTIFY, basic `*97` mailbox access, admin API/UI, and a dedicated RTP range.
+- Added project architecture documentation in `docs/architecture.md`.
+
+### Changed
+- Updated Docker, deployment, README, and AI-assistance documentation for the new conference and voicemail media ranges.
+- Bumped backend and frontend package metadata to `1.3.0`.
+
+### Fixed
+- Hardened voicemail storage keys against repeated Call-ID overwrite/collision cases.
+- Hardened voicemail MWI and `*97` access checks by requiring the source socket to match an active registration.
+- Aligned voicemail maximum message validation with the recorder buffer cap.
+- Fixed no-answer voicemail/CANCEL race handling so cancelled calls are not recorded.
 
 ## [v1.2.0] - 2026-05-15
 

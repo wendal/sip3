@@ -50,6 +50,15 @@ Then run migrations:
 mysql -u root -proot sip3 < migrations/001_initial.sql
 mysql -u root -proot sip3 < migrations/002_seed.sql
 mysql -u root -proot sip3 < migrations/003_media_sessions.sql
+mysql -u root -proot sip3 < migrations/004_admin_users.sql
+mysql -u root -proot sip3 < migrations/005_call_indexes.sql
+mysql -u root -proot sip3 < migrations/006_acl.sql
+mysql -u root -proot sip3 < migrations/007_presence.sql
+mysql -u root -proot sip3 < migrations/008_numeric_seed_accounts.sql
+mysql -u root -proot sip3 < migrations/009_security_events.sql
+mysql -u root -proot sip3 < migrations/010_sip_messages.sql
+mysql -u root -proot sip3 < migrations/011_conference_rooms.sql
+mysql -u root -proot sip3 < migrations/012_voicemail.sql
 ```
 
 ### 2. Backend Configuration
@@ -218,10 +227,38 @@ UDP 5060         - SIP signaling
 UDP 10000-10099  - RTP media relay
 UDP 10100-10199  - Conference room RTP (G.711 mixer)
 UDP 10200-10299  - Voicemail RTP (G.711 PCMU/PCMA)
+UDP 20000-20099  - WebRTC ICE media
+UDP/TCP 3478     - TURN/STUN
+TCP 5349         - TURN/TLS
 TCP 3000         - REST API (internal only in production)
 TCP 8030/443     - Admin UI
 TCP 3306         - MySQL (internal only)
 ```
+
+## Release and Production Update
+
+The current production layout is expected to be `root@sip.air32.cn:/opt/sip3`.
+
+```bash
+ssh root@sip.air32.cn
+cd /opt/sip3
+git fetch --tags origin
+git checkout main
+git pull --ff-only origin main
+git describe --tags --always
+docker compose up -d --build
+docker compose ps
+curl -f http://127.0.0.1:3000/api/health
+```
+
+For `v1.3.0`, verify that Docker publishes all four media ranges:
+
+- RTP relay: `10000-10099/udp`
+- Conference RTP: `10100-10199/udp`
+- Voicemail RTP: `10200-10299/udp`
+- WebRTC ICE: `20000-20099/udp`
+
+Do not run destructive git commands in production unless local configuration has been backed up. Production-specific secrets should stay outside tracked files.
 
 ## Production Hardening
 
@@ -260,6 +297,7 @@ TCP 3306         - MySQL (internal only)
 - Verify prompt WAV files exist under `voicemail_prompt_dir` and message WAV files can be written under `voicemail_storage_dir`
 - Confirm the phone offers PCMU or PCMA over RTP/AVP; SRTP/SAVP, Opus, and WebRTC voicemail are not supported
 - For MWI, confirm the phone sends `SUBSCRIBE Event: message-summary`
+- If MWI or `*97` access is rejected, confirm the SIP phone is registered from the same public source IP/port used by the SUBSCRIBE/INVITE request.
 
 ### No video in Linphone after call connects
 - Verify UDP ports 10000–10099 are open and forwarded to the server

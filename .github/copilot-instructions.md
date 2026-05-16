@@ -8,7 +8,7 @@ cd backend
 
 cargo build                        # debug build
 cargo build --release              # release build
-cargo test                         # run all tests (currently 23)
+cargo test                         # run all tests (currently 96 unit + 49 integration)
 cargo test test_parse_register_request  # run a single test by name
 cargo clippy -- -D warnings        # lint (CI enforces zero warnings)
 cargo fmt --check                  # format check (use `cargo fmt` to fix)
@@ -31,7 +31,7 @@ docker compose up -d         # start all services
 docker compose logs -f backend   # watch backend logs
 ```
 
-Ports: Admin UI **:8030**, REST API **:3000**, SIP/UDP **:5060**, SIP/TLS **:5061**, SIP/WS **:5080**, SIP/WSS **:5443**, RTP relay **UDP :10000–10099**.
+Ports: Admin UI **:8030**, REST API **:3000**, SIP/UDP **:5060**, SIP/TLS **:5061**, SIP/WS **:5080**, SIP/WSS **:5443**, RTP relay **UDP :10000–10099**, conference RTP **UDP :10100–10199**, voicemail RTP **UDP :10200–10299**, WebRTC ICE **UDP :20000–20099**.
 
 ---
 
@@ -54,12 +54,14 @@ Incoming message (any transport)
   ┌──────┴──────────────┐
   No (response)          Yes (request)
   │                      │
-  relay_response()       method dispatch:
+  relay_response()       method dispatch/local endpoints:
   (strip proxy Via,        REGISTER  → Registrar::handle_register()
-   rewrite 200 SDP,        INVITE    → Proxy::handle_invite()
-   forward to caller)      ACK/BYE/CANCEL/INFO → Proxy
+   rewrite 200 SDP,        INVITE    → conference/voicemail local endpoint,
+   forward to caller)                  else Proxy::handle_invite()
+                           ACK/BYE/CANCEL/INFO → conference/voicemail active dialog,
+                                               else Proxy
                            REFER/NOTIFY → Proxy
-                           SUBSCRIBE → Presence::handle_subscribe()
+                           SUBSCRIBE → MWI or Presence::handle_subscribe()
                            OPTIONS   → 200 OK inline
 ```
 
@@ -78,11 +80,19 @@ TLS uses `native-tls` (OS cert chain). WSS reuses the same cert/key as SIP/TLS.
 
 ### RTP media relay
 
-For each INVITE, `MediaRelay` allocates **two UDP sockets** (`relay_a`, `relay_b`) from the configured port range:
+For each proxied audio/video INVITE, `MediaRelay` allocates **two UDP sockets per active media section** (`relay_a`, `relay_b`) from the configured port range:
 - INVITE SDP rewritten: callee receives `relay_a` address → sends RTP there → forwarded to caller
 - 200 OK SDP rewritten: caller receives `relay_b` address → sends RTP there → forwarded to callee
 - Peer addresses are learned from the **source of the first packet** (symmetric RTP), so private/NAT addresses in SDP are ignored.
 - `a=crypto:` (SRTP/SDES) lines are **preserved unchanged** — phones perform end-to-end SRTP; the relay forwards encrypted bytes transparently. No proxy-side decryption needed.
+
+### Conference rooms
+
+`Conference` is a local SIP endpoint for 9-digit numeric room extensions. It answers Linphone-compatible RTP/AVP G.711 PCMU/PCMA offers, allocates one UDP RTP socket per participant from `server.conference_rtp_port_min/max`, mixes decoded 8 kHz PCM audio server-side, and supports `*6` mute via RFC 2833 telephone-event RTP or SIP INFO. The MVP excludes PINs, SRTP/SAVP, video, Opus, and browser/WebRTC conference participation.
+
+### Voicemail
+
+`Voicemail` is a local SIP endpoint for offline/no-answer recording and basic `*97` mailbox access readiness. It negotiates RTP/AVP PCMU/PCMA only, records local WAV files through `VoicemailStorage`, stores metadata in MySQL, and sends MWI with `VoicemailMwi` using `SUBSCRIBE/NOTIFY Event: message-summary`. MWI SUBSCRIBE and `*97` access require the request source IP/port to match the caller/subscriber's active registration. Full playback IVR/navigation/save/delete, PINs, busy-to-voicemail, email, SRTP/Opus/WebRTC voicemail are out of scope for v1.3.0.
 
 ### IP ACL
 
@@ -97,6 +107,8 @@ For each INVITE, `MediaRelay` allocates **two UDP sockets** (`relay_a`, `relay_b
 `SipHandler` is cloned per-task and holds:
 - `Registrar` (pool + config + `Presence`)
 - `Proxy` (pool + config + shared socket + `PendingDialogs` + `MediaRelay` + `ActiveDialogs`)
+- `Conference` (pool + config + shared socket + `ConferenceMedia`)
+- `Voicemail` (pool + config + shared socket + `VoicemailMedia` + `VoicemailMwi`)
 - `PendingDialogs`: `Arc<Mutex<HashMap<call_id, caller_SocketAddr>>>` — maps in-flight INVITE call-IDs to the caller's address so responses can be relayed back
 - `ActiveDialogs`: `Arc<Mutex<HashMap<call_id, DialogInfo>>>` — established dialog state for bidirectional BYE/INFO routing
 
@@ -136,12 +148,12 @@ Config is loaded by the `config` crate with `SIP3__` prefix and `__` as the nest
 File-based config (`backend/config.toml`) is optional and overridden by env vars.
 
 ### Database
-- Raw SQLx queries (no ORM, no migration runner at startup). Migrations are plain SQL files in `migrations/` applied once via Docker entrypoint initdb.
+- Raw SQLx queries (no ORM). Backend also embeds `backend/migrations/` with `sqlx::migrate!()`, so add new SQL files to both `migrations/` and `backend/migrations/`.
 - Account identity is `(username, domain)` — the same username can exist in multiple SIP domains.
 - DB connection uses **exponential-backoff retry** (up to 10 attempts, 1s→2s→4s→…→30s cap) in `src/db.rs`.
 
 ### Docker port ranges
-Keep RTP port mappings **small** (≤200 ports). Mapping thousands of UDP ports in `docker-compose.yml` causes Docker to hang on startup due to iptables rule creation overhead. Current default: `10000-10099`.
+Keep each RTP port mapping **small** (≤200 ports). Mapping thousands of UDP ports in `docker-compose.yml` causes Docker to hang on startup due to iptables rule creation overhead. Current defaults: relay `10000-10099`, conference `10100-10199`, voicemail `10200-10299`, WebRTC `20000-20099`.
 
 ### Nonce format
 SIP auth nonces are `{data}:{MAC}` (57 chars total):

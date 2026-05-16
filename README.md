@@ -54,13 +54,13 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 - ✅ Browser softphone at `/phone` — SIP.js + WebRTC, TURN auto-configured
 - ✅ Search, pagination, de-register, call statistics
 
-### What's new in v1.2.0
+### What's new in v1.3.0
 
-- ✅ Added reverse WebRTC bridge for **SIP caller -> browser callee** flows.
-- ✅ Fixed CANCEL forwarding to preserve transaction consistency with forwarded INVITE.
-- ✅ Added sender-source registration port refresh for authenticated INVITE/MESSAGE to survive NAT port rebinding.
-- ✅ Fixed RTP relay source-port behavior so media packets are sent from SDP-signaled relay ports.
-- ✅ Added `migrations/010_sip_messages.sql` for MESSAGE persistence schema completeness.
+- ✅ Added Linphone-compatible **audio conference rooms** with server-side G.711 mixing and `*6` mute.
+- ✅ Added **voicemail MVP**: offline/no-answer recording, WAV storage, MWI, `*97` access readiness, and admin UI.
+- ✅ Added dedicated media ranges: relay `10000-10099`, conference `10100-10199`, voicemail `10200-10299`, WebRTC `20000-20099`.
+- ✅ Hardened voicemail storage, MWI source validation, no-answer/CANCEL races, and message duration validation.
+- ✅ Added [docs/architecture.md](docs/architecture.md) as the project architecture reference.
 
 ### Quick Start
 
@@ -133,6 +133,9 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 | GET    | /api/calls                 | List call records (CDR)               |
 | POST   | /api/calls/cleanup         | Close stale active calls (`?older_than_hours=N`, default 4; pass 0 for all). Backend also runs this automatically at startup and every 5 min. |
 | GET    | /api/messages              | List persisted SIP MESSAGE records    |
+| GET/POST | /api/conferences         | List/create conference rooms          |
+| PUT/DELETE | /api/conferences/:id    | Update/delete a conference room       |
+| GET    | /api/conferences/:id/participants | List active conference participants |
 | GET/POST | /api/voicemail/boxes      | List/create voicemail mailboxes       |
 | PUT    | /api/voicemail/boxes/:id   | Update voicemail mailbox settings     |
 | GET    | /api/voicemail/messages    | List voicemail messages               |
@@ -231,6 +234,8 @@ npm run dev         # dev server on :5173
 - **No ringing / MESSAGE not delivered**: check `sip_registrations.source_ip/source_port` against the sender's real source socket.
 - **Call connected but no audio**: verify UDP RTP range (`10000-10099`) is open and relay ports in SDP match packet source ports.
 - **Linphone video does not appear**: verify both offer and answer SDP rewrite `m=video` to the SIP3 public IP and a relay port. A SIP audio+video call consumes four RTP relay ports, so the default range supports fewer concurrent video calls than audio-only calls. Browser WebRTC video is not covered by the legacy SIP RTP relay path.
+- **Conference has no audio / cannot join**: confirm the room is enabled, the phone offers RTP/AVP PCMU or PCMA, and UDP `10100-10199` is open.
+- **Voicemail does not answer / MWI not updated**: confirm the mailbox is enabled, the caller/subscriber source matches an active registration, UDP `10200-10299` is open, and prompt/storage directories are writable.
 - **MESSAGE persistence errors (1146)**: ensure migration `010_sip_messages.sql` has been applied.
 
 See [docs/deployment.md](docs/deployment.md) for full deployment and TLS setup guide.
@@ -280,13 +285,13 @@ SIP3 是一个功能完整的 SIP 代理/注册服务器，使用 Rust 构建后
 - ✅ `/phone` 浏览器软电话 — SIP.js + WebRTC，自动获取 TURN 凭证
 - ✅ 搜索、分页、强制注销、通话统计
 
-### v1.2.0 更新亮点
+### v1.3.0 更新亮点
 
-- ✅ 新增 **SIP 主叫 -> 浏览器被叫** 的反向 WebRTC 桥接。
-- ✅ 修复 CANCEL 转发事务一致性（与已转发 INVITE 保持一致）。
-- ✅ 新增已认证 INVITE/MESSAGE 的注册源端口自愈，缓解 NAT 端口漂移问题。
-- ✅ 修复 RTP relay 源端口行为，确保媒体源端口与 SDP 宣告端口一致。
-- ✅ 新增 `migrations/010_sip_messages.sql`，补齐 MESSAGE 存储表迁移。
+- ✅ 新增兼容 Linphone 的 **音频会议室**：服务端 G.711 混音，`*6` 静音切换。
+- ✅ 新增 **语音信箱 MVP**：离线/无人接听录音、WAV 存储、MWI、`*97` 访问准备和管理界面。
+- ✅ 新增独立媒体端口范围：通话中继 `10000-10099`、会议 `10100-10199`、语音信箱 `10200-10299`、WebRTC `20000-20099`。
+- ✅ 加固语音信箱存储键、MWI 来源校验、无人接听/CANCEL 竞态和最大留言时长校验。
+- ✅ 新增 [docs/architecture.md](docs/architecture.md) 项目架构文档。
 
 ### 快速开始
 
@@ -382,6 +387,8 @@ npm run dev         # 开发服务器 :5173
 - **不响铃 / MESSAGE 收不到**：优先核对 `sip_registrations` 中 `source_ip/source_port` 是否与实时来包一致。
 - **接通无声音**：确认 UDP `10000-10099` 已放行，并核对 SDP 中继端口与实际 RTP 源端口一致。
 - **Linphone 视频无画面**：确认 INVITE 和 200 OK 的 SDP 都把 `m=video` 改写到 SIP3 公网 IP 和中继端口。SIP 音视频通话每路会占用 4 个 RTP 中继端口，因此默认端口范围支持的并发视频通话少于纯音频通话。浏览器 WebRTC 视频不属于传统 SIP RTP 中继路径。
+- **会议无声音 / 无法入会**：确认会议室已启用、终端提供 RTP/AVP PCMU 或 PCMA，并放行 UDP `10100-10199`。
+- **语音信箱不接听 / MWI 不更新**：确认信箱已启用、呼叫/订阅来源与有效注册源一致，UDP `10200-10299` 已放行，提示音和存储目录可读写。
 - **MESSAGE 入库报 1146**：确认已执行迁移 `010_sip_messages.sql`。
 
 > **重要**：`SIP3__SERVER__PUBLIC_IP` 建议配置为公网 **数字 IPv4**（例如 `154.8.159.79`），避免终端因 SDP 中使用域名导致兼容问题。
