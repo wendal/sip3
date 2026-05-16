@@ -27,11 +27,11 @@ Admin browser -- :8030 -- Frontend -- REST API (:3000) -- MySQL 8.0
 | Registrar | `backend/src/sip/registrar.rs` | REGISTER digest auth, registration persistence, source-address tracking, and presence status changes. |
 | Proxy | `backend/src/sip/proxy.rs` | User-to-user INVITE/MESSAGE/BYE/CANCEL/INFO/REFER routing, active dialog tracking, SDP rewriting, and CDR updates. |
 | RTP relay | `backend/src/sip/media.rs` | Symmetric RTP/SRTP relay for SIP phone audio/video calls. Allocates two relay sockets per active SDP media section. |
-| WebRTC gateway | `backend/src/sip/webrtc_gateway.rs` | Browser ICE/DTLS-SRTP to plain SIP RTP bridging for `/phone`. |
+| WebRTC gateway | `backend/src/sip/webrtc_gateway.rs` | Browser ICE/DTLS-SRTP to plain SIP RTP bridging for `/phone` audio/interoperability paths. Browser-to-browser video on `/phone` stays end-to-end WebRTC between browsers. |
 | Conference | `backend/src/sip/conference*.rs` | Local 9-digit room endpoint, RTP/AVP G.711 negotiation, participant lifecycle, server-side mixing, and `*6` mute. |
 | Voicemail | `backend/src/sip/voicemail*.rs`, `backend/src/storage/voicemail.rs` | Offline/no-answer recording, `*97` access readiness, MWI message-summary notifications, and local WAV storage. |
 | REST API | `backend/src/api/*.rs` | JWT-protected admin APIs for accounts, calls, ACL, security, conferences, voicemail, and dashboard stats. |
-| Frontend | `frontend/src` | Vue 3 + Element Plus admin dashboard and browser softphone. |
+| Frontend | `frontend/src` | Vue 3 + Element Plus admin dashboard and `/phone` browser softphone for audio plus browser-to-browser video. |
 
 ## SIP routing order
 

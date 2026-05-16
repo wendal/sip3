@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Added
+- Added `/phone` browser-to-browser video calling MVP with pre-call audio/video selection, remote video rendering, and local preview.
+- Added browser softphone media helper coverage for negotiated video fallback and local sender-track shutdown.
+
+### Changed
+- Updated `/phone` call teardown to stop local sender tracks on hangup, disconnect, failed setup, and video-to-audio fallback.
+- Updated README and architecture docs to clarify that `/phone` video currently supports browser-to-browser calls only.
+
 ## [v1.3.0] - 2026-05-16
 
 ### Added
