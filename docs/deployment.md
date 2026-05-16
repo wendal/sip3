@@ -246,6 +246,7 @@ Do not run destructive git commands in production unless local configuration has
 6. **Logging**: Configure log aggregation (ELK, Loki, etc.)
 7. **public_ip**: Set `server.public_ip` to the server's actual public IPv4 address
 8. **Built-in bruteforce protection**: tune `SIP3__SECURITY__*` thresholds and keep `/api/security/*` endpoints behind JWT/API-key auth
+9. **Illegal SIP INVITE scans**: if the server only accepts calls from registered endpoints, tune `SIP3__SECURITY__SIP_INVITE_IP_FAIL_THRESHOLD` and `SIP3__SECURITY__SIP_INVITE_USER_IP_FAIL_THRESHOLD` so repeated unknown-caller INVITEs are auto-banned
 
 ## Troubleshooting
 
@@ -257,6 +258,8 @@ Do not run destructive git commands in production unless local configuration has
 ### Repeated scan / bruteforce attempts
 - Check current auto-bans: `curl -H "Authorization: Bearer <JWT>" http://localhost:3000/api/security/blocks`
 - Check recent security events: `curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/security/events?limit=100"`
+- Check recent illegal INVITE events only: `curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/security/events?surface=sip_invite&event_type=invite_rejected&limit=100"`
+- Check 24h summary counters (now includes INVITE abuse): `curl -H "Authorization: Bearer <JWT>" http://localhost:3000/api/security/summary`
 - Check runtime troubleshooting snapshot: `curl -H "Authorization: Bearer <JWT>" http://localhost:3000/api/security/runtime`
 - Manually unblock one CIDR if needed:
   `curl -X POST -H "Authorization: Bearer <JWT>" -H "Content-Type: application/json" -d '{"cidr":"203.0.113.10/32"}' http://localhost:3000/api/security/blocks/unblock`

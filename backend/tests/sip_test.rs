@@ -4,10 +4,13 @@
 #[cfg(test)]
 mod tests {
     use sip3_backend::api::accounts::validate_sip_username;
-    use sip3_backend::security_guard::{AuthSurface, GuardLimits, SecurityGuard};
+    use sip3_backend::config::Config;
+    use sip3_backend::security_guard::{
+        AuthSurface, GuardLimits, INVITE_AUTO_BAN_DESCRIPTION, SecurityEventType, SecurityGuard,
+    };
     use sip3_backend::sip::call_cleanup::STALE_CALL_CLEANUP_SQL;
     use sip3_backend::sip::handler::{
-        SIP_ALLOW_METHODS, SipMessage, extract_uri, md5_hex, normalize_header_name,
+        DialogStores, SIP_ALLOW_METHODS, SipMessage, extract_uri, md5_hex, normalize_header_name,
         parse_auth_params, strip_proxy_via, uri_username,
     };
     use sip3_backend::sip::media::{
@@ -15,7 +18,7 @@ mod tests {
         sdp_audio_port, sdp_has_crypto,
     };
     use sip3_backend::sip::proxy::{
-        CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL,
+        CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL, Proxy,
         build_forwarded_cancel_for_target, build_forwarded_invite_for_target,
         registered_target_uri, should_bridge_plain_sip_to_websocket_target,
         should_preserve_webrtc_sdp_for_target, should_refresh_registration_source,
@@ -24,7 +27,20 @@ mod tests {
         ACCOUNT_LOOKUP_SQL, generate_nonce, routable_contact_uri, validate_nonce,
     };
     use sip3_backend::sip::transport::TransportRegistry;
+    use sip3_backend::sip::voicemail::Voicemail;
+    use sip3_backend::sip::voicemail_media::VoicemailMedia;
+    use sip3_backend::sip::voicemail_mwi::VoicemailMwi;
+    use sip3_backend::sip::webrtc_gateway::WebRtcGateway;
+    use sqlx::MySqlPool;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
+    use tokio::net::UdpSocket;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     // ── SipMessage::parse ────────────────────────────────────────────────────
 
@@ -814,6 +830,115 @@ mod tests {
         assert!(!guard.record_failure(AuthSurface::ApiLogin, "203.0.113.30", Some("admin")));
         guard.record_success("203.0.113.30", Some("admin"));
         assert!(!guard.record_failure(AuthSurface::ApiLogin, "203.0.113.30", Some("admin")));
+    }
+
+    #[test]
+    fn test_guard_has_invite_surface_and_event_db_values() {
+        assert_eq!(AuthSurface::SipInvite.as_db_value(), "sip_invite");
+        assert_eq!(
+            SecurityEventType::InviteRejected.as_db_value(),
+            "invite_rejected"
+        );
+    }
+
+    #[test]
+    fn test_invite_auto_ban_description_constant() {
+        assert_eq!(
+            INVITE_AUTO_BAN_DESCRIPTION,
+            "auto-ban: invalid sip invite abuse"
+        );
+    }
+
+    #[test]
+    fn test_security_config_loads_invite_thresholds_from_env() {
+        let _guard = env_lock().lock().unwrap();
+
+        unsafe {
+            std::env::set_var("SIP3__SECURITY__SIP_INVITE_IP_FAIL_THRESHOLD", "7");
+            std::env::set_var("SIP3__SECURITY__SIP_INVITE_USER_IP_FAIL_THRESHOLD", "3");
+        }
+
+        let cfg = Config::load().expect("config should load");
+
+        assert_eq!(cfg.security.sip_invite_ip_fail_threshold, 7);
+        assert_eq!(cfg.security.sip_invite_user_ip_fail_threshold, 3);
+
+        unsafe {
+            std::env::remove_var("SIP3__SECURITY__SIP_INVITE_IP_FAIL_THRESHOLD");
+            std::env::remove_var("SIP3__SECURITY__SIP_INVITE_USER_IP_FAIL_THRESHOLD");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_handle_invite_rejects_blocked_invalid_invite_source() {
+        let mut cfg = Config::load().expect("config should load");
+        cfg.security.sip_invite_ip_fail_threshold = 1;
+        cfg.security.sip_invite_user_ip_fail_threshold = 1;
+
+        let pool =
+            MySqlPool::connect_lazy("mysql://root:root@127.0.0.1:3306/sip3").expect("lazy pool");
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bind udp"));
+        let invite_guard = Arc::new(tokio::sync::Mutex::new(SecurityGuard::new(GuardLimits {
+            window_secs: cfg.security.window_secs,
+            ip_fail_threshold: cfg.security.sip_invite_ip_fail_threshold as usize,
+            user_ip_fail_threshold: cfg.security.sip_invite_user_ip_fail_threshold as usize,
+            block_secs: cfg.security.block_secs,
+        })));
+        invite_guard.lock().await.record_failure(
+            AuthSurface::SipInvite,
+            "198.51.100.44",
+            Some("800698"),
+        );
+
+        let voicemail_media = VoicemailMedia::new(
+            cfg.server.public_ip.clone(),
+            cfg.server.voicemail_rtp_port_min,
+            cfg.server.voicemail_rtp_port_max,
+        );
+        let voicemail_mwi = VoicemailMwi::new(pool.clone(), cfg.clone(), socket.clone());
+        let voicemail = Voicemail::new(pool.clone(), cfg.clone(), voicemail_media, voicemail_mwi);
+        let proxy = Proxy::new(
+            pool,
+            cfg.clone(),
+            socket,
+            DialogStores {
+                pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                active: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            },
+            MediaRelay::new(
+                cfg.server.public_ip.clone(),
+                cfg.server.rtp_port_min,
+                cfg.server.rtp_port_max,
+            ),
+            Arc::new(WebRtcGateway::new(
+                cfg.server.public_ip.clone(),
+                cfg.server.rtp_port_min,
+                cfg.server.rtp_port_max,
+            )),
+            TransportRegistry::default(),
+            voicemail,
+            invite_guard,
+        );
+
+        let msg = SipMessage::parse(
+            "INVITE sip:1001@sip.air32.cn SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 198.51.100.44:5060;branch=z9hG4bK74bf9\r\n\
+             From: <sip:800698@sip.air32.cn>;tag=9fxced76sl\r\n\
+             To: <sip:1001@sip.air32.cn>\r\n\
+             Call-ID: blocked-invite-test\r\n\
+             CSeq: 1 INVITE\r\n\
+             Max-Forwards: 70\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+        )
+        .expect("parse invite");
+
+        let response = proxy
+            .handle_invite(&msg, "198.51.100.44:5060".parse().unwrap())
+            .await
+            .expect("invite should be handled");
+
+        assert!(response.starts_with("SIP/2.0 403 Forbidden"));
     }
 
     // ── ACL ──────────────────────────────────────────────────────────────────

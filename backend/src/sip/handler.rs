@@ -433,6 +433,12 @@ impl SipHandler {
             user_ip_fail_threshold: cfg.security.sip_user_ip_fail_threshold as usize,
             block_secs: cfg.security.block_secs,
         })));
+        let invite_guard = Arc::new(tokio::sync::Mutex::new(SecurityGuard::new(GuardLimits {
+            window_secs: cfg.security.window_secs,
+            ip_fail_threshold: cfg.security.sip_invite_ip_fail_threshold as usize,
+            user_ip_fail_threshold: cfg.security.sip_invite_user_ip_fail_threshold as usize,
+            block_secs: cfg.security.block_secs,
+        })));
         let presence = Presence::new(pool.clone(), cfg.clone(), socket.clone());
         let voicemail_media = VoicemailMedia::new(
             cfg.server.public_ip.clone(),
@@ -456,6 +462,7 @@ impl SipHandler {
             webrtc_gateway.clone(),
             transport_registry.clone(),
             voicemail.clone(),
+            invite_guard,
         );
         let conference_media = ConferenceMedia::new(
             cfg.server.public_ip.clone(),

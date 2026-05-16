@@ -4,7 +4,9 @@ use serde_json::{Value, json};
 
 use super::AppState;
 use crate::models::{AutoBlockEntry, SecurityEvent, UnblockRequest};
-use crate::security_guard::{AuthSurface, SecurityEventType, persist_security_event};
+use crate::security_guard::{
+    AuthSurface, INVITE_AUTO_BAN_DESCRIPTION, SecurityEventType, persist_security_event,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct SecurityEventsQuery {
@@ -96,6 +98,16 @@ pub async fn unblock(
         return Err((StatusCode::BAD_REQUEST, "cidr is required".to_string()));
     }
 
+    let description: Option<String> = sqlx::query_scalar(
+        "SELECT description FROM sip_acl
+         WHERE action = 'deny' AND cidr = ? AND enabled = 1 AND description LIKE 'auto-ban:%'
+         LIMIT 1",
+    )
+    .bind(body.cidr.trim())
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let result = sqlx::query(
         "UPDATE sip_acl
          SET enabled = 0
@@ -111,9 +123,18 @@ pub async fn unblock(
     }
 
     let source_ip = body.cidr.split('/').next().unwrap_or("0.0.0.0").to_string();
+    let surface = if description
+        .as_deref()
+        .unwrap_or("")
+        .contains(INVITE_AUTO_BAN_DESCRIPTION)
+    {
+        AuthSurface::SipInvite
+    } else {
+        AuthSurface::SipRegister
+    };
     if let Err(e) = persist_security_event(
         &state.pool,
-        AuthSurface::SipRegister,
+        surface,
         SecurityEventType::IpUnblocked,
         &source_ip,
         None,
@@ -144,6 +165,23 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<Value>, (Stat
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let invite_rejected_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sip_security_events
+         WHERE event_type = 'invite_rejected' AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let invite_blocked_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sip_security_events
+         WHERE surface = 'sip_invite' AND event_type = 'ip_blocked'
+           AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let active_auto_blocks: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sip_acl
          WHERE action = 'deny' AND enabled = 1 AND description LIKE 'auto-ban:%'",
@@ -155,6 +193,8 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<Value>, (Stat
     Ok(Json(json!({
         "auth_failed_24h": failed_24h,
         "blocked_24h": blocked_24h,
+        "invite_rejected_24h": invite_rejected_24h,
+        "invite_blocked_24h": invite_blocked_24h,
         "active_auto_blocks": active_auto_blocks
     })))
 }
@@ -183,6 +223,14 @@ pub async fn runtime_snapshot(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let recent_invite_rejected_5m: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sip_security_events
+         WHERE event_type = 'invite_rejected' AND created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let active_auto_blocks: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sip_acl
          WHERE action = 'deny' AND enabled = 1 AND description LIKE 'auto-ban:%'",
@@ -191,10 +239,22 @@ pub async fn runtime_snapshot(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let active_invite_auto_blocks: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sip_acl
+         WHERE action = 'deny' AND enabled = 1
+           AND description = ?",
+    )
+    .bind(INVITE_AUTO_BAN_DESCRIPTION)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     Ok(Json(json!({
         "active_registrations": active_registrations,
         "active_calls": active_calls,
         "recent_failed_auth_5m": recent_failed_auth_5m,
-        "active_auto_blocks": active_auto_blocks
+        "recent_invite_rejected_5m": recent_invite_rejected_5m,
+        "active_auto_blocks": active_auto_blocks,
+        "active_invite_auto_blocks": active_invite_auto_blocks
     })))
 }
