@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - Docker Engine 24+ and Docker Compose v2
+- `skopeo` installed on the Harbor sync host that runs `scripts/sync-from-ghcr.sh`
 - Access to the Harbor registry at `harbor.air32.cn`
 - A host-specific `.env` file copied from `.env.example`
 - `docker login harbor.air32.cn` credentials for the deploy user
@@ -45,31 +46,76 @@ GitHub Actions publishes backend and frontend images to:
 - `ghcr.io/wendal/sip3/backend`
 - `ghcr.io/wendal/sip3/frontend`
 
-The Harbor host is responsible for copying a chosen tag into Harbor:
+The Harbor host is responsible for copying a chosen tag into Harbor. Production still pulls only from Harbor.
+
+### 1. Prepare `.env`
+
+Copy `.env.example` to `.env` on the production host and set real values:
+
+```bash
+cp .env.example .env
+```
+
+At minimum, set:
+
+```bash
+HARBOR_IMAGE_PREFIX=harbor.air32.cn/sip3
+IMAGE_TAG=git-<shortsha>
+MYSQL_ROOT_PASSWORD=...
+MYSQL_PASSWORD=...
+SIP3__DATABASE__URL=mysql://sip3:...@mysql:3306/sip3
+SIP3__SERVER__PUBLIC_IP=...
+SIP3__TURN__SECRET=...
+```
+
+`IMAGE_TAG` must match the exact tag that you copy from GHCR into Harbor.
+
+### 2. Sync the selected tag into Harbor
 
 ```bash
 ssh root@sip.air32.cn
 cd /opt/sip3
-bash scripts/sync-from-ghcr.sh git-9700c58
+bash scripts/sync-from-ghcr.sh git-<shortsha>
 ```
 
-After sync, deploy from Harbor only:
+### 3. Verify the tag exists in Harbor
 
 ```bash
-export IMAGE_TAG=git-9700c58
+skopeo inspect docker://harbor.air32.cn/sip3/backend:git-<shortsha>
+skopeo inspect docker://harbor.air32.cn/sip3/frontend:git-<shortsha>
+```
+
+### 4. Log in to Harbor on the production host
+
+```bash
+docker login harbor.air32.cn
+```
+
+Use a Harbor robot account with pull access before running `docker compose pull`.
+
+### 5. Deploy from Harbor only
+
+```bash
+export IMAGE_TAG=git-<shortsha>
 docker compose pull
 docker compose up -d
 docker compose ps
 curl -f http://127.0.0.1:3000/api/health
 ```
 
-To roll back:
+### 6. Roll back
 
 ```bash
 export IMAGE_TAG=<previous-good-tag>
 docker compose pull
 docker compose up -d
+docker compose ps
+curl -f http://127.0.0.1:3000/api/health
 ```
+
+### 7. Database migrations
+
+The backend applies the embedded SQLx migrations during startup after it connects to MySQL. If a migration fails, the backend container startup fails as well, so verify with `docker compose ps` and `docker compose logs backend`. Do not run source builds on the production host.
 
 ## Harbor Server Deployment
 
@@ -192,18 +238,7 @@ TCP 3306         - MySQL (internal only)
 
 ## Release and Production Update
 
-The current production layout is expected to be `root@sip.air32.cn:/opt/sip3`.
-
-```bash
-ssh root@sip.air32.cn
-cd /opt/sip3
-bash scripts/sync-from-ghcr.sh git-9700c58
-export IMAGE_TAG=git-9700c58
-docker compose pull
-docker compose up -d
-docker compose ps
-curl -f http://127.0.0.1:3000/api/health
-```
+The canonical procedure is the **Production Deployment (GHCR -> Harbor Sync)** section above. On the current production layout, run those steps from `root@sip.air32.cn:/opt/sip3`, keep the same `git-<shortsha>` tag across sync and deploy, and use that section for the Harbor login, `skopeo inspect`, deploy, rollback, and health-check commands.
 
 For `v1.3.0`, verify that Docker publishes all four media ranges:
 
