@@ -70,28 +70,28 @@ SIP3__TURN__SECRET=...
 
 `IMAGE_TAG` must match the exact tag that you copy from GHCR into Harbor.
 
-### 2. Sync the selected tag into Harbor
+### 2. Log in to Harbor on the Harbor sync host
 
 ```bash
 ssh root@sip.air32.cn
 cd /opt/sip3
+docker login harbor.air32.cn
+```
+
+Use a Harbor robot account with push/pull access before running `scripts/sync-from-ghcr.sh`. The same host can reuse the cached Harbor credentials for later `docker compose pull` runs.
+
+### 3. Sync the selected tag into Harbor
+
+```bash
 bash scripts/sync-from-ghcr.sh git-<shortsha>
 ```
 
-### 3. Verify the tag exists in Harbor
+### 4. Verify the tag exists in Harbor
 
 ```bash
 skopeo inspect docker://harbor.air32.cn/sip3/backend:git-<shortsha>
 skopeo inspect docker://harbor.air32.cn/sip3/frontend:git-<shortsha>
 ```
-
-### 4. Log in to Harbor on the production host
-
-```bash
-docker login harbor.air32.cn
-```
-
-Use a Harbor robot account with pull access before running `docker compose pull`.
 
 ### 5. Deploy from Harbor only
 
