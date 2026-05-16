@@ -62,7 +62,7 @@
               <div class="incoming-label">来电</div>
               <div class="incoming-avatar">{{ avatarChar(callLabel) }}</div>
               <div class="incoming-name">{{ callLabel || '未知' }}</div>
-              <div class="incoming-sub">SIP3 · {{ form.domain }}</div>
+              <div class="incoming-sub">{{ callMediaLabel }} · SIP3 · {{ form.domain }}</div>
             </div>
             <div class="incoming-actions">
               <button class="round-btn round-btn--danger pulse" @click="rejectCall">
@@ -75,18 +75,53 @@
           </section>
 
           <!-- ─── Active call ────────────────────────────────────────── -->
-          <section v-else-if="activeCallStates.includes(callState)" key="active" class="screen screen--active">
-            <div class="active-meta">
+          <section
+            v-else-if="activeCallStates.includes(callState)"
+            key="active"
+            :class="['screen', 'screen--active', { 'screen--active-video': isCurrentCallVideo }]"
+          >
+            <div v-if="isCurrentCallVideo" class="video-stage">
+              <video ref="remoteVideo" class="video-stage__remote" autoplay playsinline />
+              <video
+                v-show="cameraEnabled"
+                ref="localVideo"
+                class="video-stage__local"
+                autoplay
+                muted
+                playsinline
+              />
+              <div class="video-stage__overlay">
+                <div class="active-meta active-meta--video">
+                  <div class="active-name">{{ callLabel || '通话中' }}</div>
+                  <div class="active-sub">
+                    {{ callStateLabel }} · {{ callMediaLabel }}
+                    <span v-if="callState === 'active'" class="num">· {{ formatDuration(callDuration) }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="active-meta">
               <div class="active-avatar">{{ avatarChar(callLabel) }}</div>
               <div class="active-name">{{ callLabel || '通话中' }}</div>
-              <div class="active-sub">{{ callStateLabel }} <span v-if="callState === 'active'" class="num">· {{ formatDuration(callDuration) }}</span></div>
+              <div class="active-sub">
+                {{ callStateLabel }} · {{ callMediaLabel }}
+                <span v-if="callState === 'active'" class="num">· {{ formatDuration(callDuration) }}</span>
+              </div>
             </div>
 
             <div class="active-actions">
+              <button
+                v-if="isCurrentCallVideo"
+                class="round-btn round-btn--ghost"
+                :class="{ 'is-on': cameraEnabled }"
+                @click="toggleCamera"
+                :title="cameraEnabled ? '关闭摄像头' : '打开摄像头'"
+              >
+                <el-icon><VideoCamera /></el-icon>
+              </button>
               <button class="round-btn round-btn--ghost" :class="{ 'is-on': muted }" @click="toggleMute" :title="muted ? '取消静音' : '静音'">
                 <el-icon><Microphone /></el-icon>
               </button>
-              <div class="round-btn-spacer" />
               <button class="round-btn round-btn--danger" @click="hangup" title="挂断">
                 <el-icon><CloseBold /></el-icon>
               </button>
@@ -96,7 +131,23 @@
           <!-- ─── Idle / Dialing — keypad / messages ─────────────────── -->
           <section v-else key="idle" class="screen screen--idle">
             <div v-if="activeTab === 'keypad'" class="tab-keypad">
+              <div class="call-mode-toggle">
+                <button
+                  :class="['call-mode-toggle__item', selectedCallMode === 'audio' ? 'is-active' : '']"
+                  @click="selectedCallMode = 'audio'"
+                >
+                  语音
+                </button>
+                <button
+                  :class="['call-mode-toggle__item', selectedCallMode === 'video' ? 'is-active' : '']"
+                  @click="selectedCallMode = 'video'"
+                >
+                  视频
+                </button>
+              </div>
+
               <div class="display-area">
+                <div class="display-mode">{{ selectedCallMode === 'video' ? '视频通话' : '语音通话' }}</div>
                 <div class="display-number num">{{ displayNumber || '\u00a0' }}</div>
                 <div v-if="callError" class="display-error">{{ callError }}</div>
               </div>
@@ -119,9 +170,9 @@
                   class="round-btn round-btn--success round-btn--large"
                   :disabled="!displayNumber || callState === 'dialing'"
                   @click="makeCall"
-                  title="呼叫"
+                  :title="selectedCallMode === 'video' ? '发起视频通话' : '发起语音通话'"
                 >
-                  <el-icon><PhoneFilled /></el-icon>
+                  <el-icon><VideoCamera v-if="selectedCallMode === 'video'" /><PhoneFilled v-else /></el-icon>
                 </button>
                 <button
                   class="action-row__back"
@@ -205,9 +256,16 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import {
   PhoneFilled, CloseBold, Microphone, ChatDotRound, Back, Promotion,
-  Connection, SwitchButton,
+  Connection, SwitchButton, VideoCamera,
 } from '@element-plus/icons-vue'
 import { activeCallStates, callFailureMessage } from '../utils/callUiState.mjs'
+import {
+  attachCallMedia,
+  hasActiveVideoMedia,
+  mediaConstraintsForCallMode,
+  resolveNegotiatedCallMode,
+  stopLocalSenderTracks,
+} from '../utils/callMedia.mjs'
 import { DIALPAD_KEYS } from '../utils/dialpad.mjs'
 import {
   UserAgent, Registerer, RegistererState, Inviter, Messager, SessionState,
@@ -243,8 +301,13 @@ const callState = ref('idle') // idle | incoming | dialing | active
 const callLabel = ref('')
 const callError = ref('')
 const muted = ref(false)
+const cameraEnabled = ref(true)
 const callDuration = ref(0)
+const selectedCallMode = ref('audio')
+const currentCallMode = ref('audio')
 const remoteAudio = ref(null)
+const remoteVideo = ref(null)
+const localVideo = ref(null)
 const chatTarget = ref('')
 const chatInput = ref('')
 const chatMessages = ref([])
@@ -256,12 +319,15 @@ const clockTime = ref('')
 
 let callTimer = null
 let clockTimer = null
+let detachSessionMedia = () => {}
 
 const callStateLabel = computed(() => ({
   incoming: '来电',
   dialing: '呼叫中…',
   active: '通话中',
 }[callState.value] || ''))
+const isCurrentCallVideo = computed(() => currentCallMode.value === 'video')
+const callMediaLabel = computed(() => (isCurrentCallVideo.value ? '视频通话' : '语音通话'))
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function formatDuration(secs) {
@@ -391,6 +457,37 @@ function stopCallTimer() {
   callDuration.value = 0
 }
 
+function cleanupSessionMedia() {
+  detachSessionMedia()
+  detachSessionMedia = () => {}
+}
+
+function resetCallUiState(session = currentSession.value) {
+  stopLocalSenderTracks(session?.sessionDescriptionHandler?.peerConnection)
+  stopCallTimer()
+  callState.value = 'idle'
+  callLabel.value = ''
+  currentSession.value = null
+  currentCallMode.value = 'audio'
+  muted.value = false
+  cameraEnabled.value = true
+  cleanupSessionMedia()
+}
+
+function syncSessionMedia(session) {
+  const peerConnection = session.sessionDescriptionHandler?.peerConnection
+  if (!peerConnection) return
+
+  cleanupSessionMedia()
+  detachSessionMedia = attachCallMedia({
+    peerConnection,
+    callMode: currentCallMode.value,
+    remoteAudio: remoteAudio.value,
+    remoteVideo: remoteVideo.value,
+    localVideo: localVideo.value,
+  })
+}
+
 // Wire up a session's media and state transitions.
 function attachSession(session, inbound) {
   currentSession.value = session
@@ -398,30 +495,26 @@ function attachSession(session, inbound) {
   session.stateChange.addListener((state) => {
     if (state === SessionState.Establishing) {
       callState.value = inbound ? 'incoming' : 'dialing'
+      syncSessionMedia(session)
     } else if (state === SessionState.Established) {
+      const peerConnection = session.sessionDescriptionHandler?.peerConnection
+      const negotiatedCallMode = resolveNegotiatedCallMode(peerConnection, currentCallMode.value)
+      if (currentCallMode.value === 'video' && negotiatedCallMode === 'audio') {
+        stopLocalSenderTracks(peerConnection, ['video'])
+      }
+      currentCallMode.value = negotiatedCallMode
+      cameraEnabled.value = currentCallMode.value === 'video'
       callState.value = 'active'
       startCallTimer()
-      const sdh = session.sessionDescriptionHandler
-      if (sdh && sdh.peerConnection) {
-        const pc = sdh.peerConnection
-        const remoteStream = new MediaStream()
-        pc.getReceivers().forEach((rcv) => {
-          if (rcv.track) remoteStream.addTrack(rcv.track)
-        })
-        if (remoteAudio.value) {
-          remoteAudio.value.srcObject = remoteStream
-        }
-      }
+      nextTick(() => {
+        if (currentSession.value !== session) return
+        syncSessionMedia(session)
+      })
     } else if (
       state === SessionState.Terminated ||
       state === SessionState.Terminating
     ) {
-      stopCallTimer()
-      callState.value = 'idle'
-      callLabel.value = ''
-      currentSession.value = null
-      muted.value = false
-      if (remoteAudio.value) remoteAudio.value.srcObject = null
+      resetCallUiState()
     }
   })
 }
@@ -473,16 +566,18 @@ async function connect() {
             : [{ urls: `stun:${form.value.domain}:3478` }],
         },
       },
-      delegate: {
-        onInvite(invitation) {
-          if (currentSession.value) {
-            invitation.reject({ statusCode: 486 })
-            return
-          }
-          callLabel.value = invitation.remoteIdentity?.uri?.user || '未知'
-          callState.value = 'incoming'
-          attachSession(invitation, true)
-        },
+        delegate: {
+          onInvite(invitation) {
+            if (currentSession.value) {
+              invitation.reject({ statusCode: 486 })
+              return
+            }
+            currentCallMode.value = hasActiveVideoMedia(invitation.request?.body) ? 'video' : 'audio'
+            callError.value = ''
+            callLabel.value = invitation.remoteIdentity?.uri?.user || '未知'
+            callState.value = 'incoming'
+            attachSession(invitation, true)
+          },
         onMessage(message) {
           const peer = message.request.from?.uri?.user || '未知'
           if (!chatTarget.value) {
@@ -518,8 +613,9 @@ async function connect() {
 }
 
 async function disconnect() {
-  if (currentSession.value) {
-    try { currentSession.value.bye() } catch { /* ignore */ }
+  const session = currentSession.value
+  if (session) {
+    try { session.bye() } catch { /* ignore */ }
   }
   if (registerer.value) {
     try { await registerer.value.unregister() } catch { /* ignore */ }
@@ -530,9 +626,7 @@ async function disconnect() {
   ua.value = null
   registerer.value = null
   registered.value = false
-  callState.value = 'idle'
-  callLabel.value = ''
-  stopCallTimer()
+  resetCallUiState(session)
   chatTarget.value = ''
   chatInput.value = ''
   chatMessages.value = []
@@ -544,6 +638,8 @@ async function makeCall() {
   if (!ua.value || !displayNumber.value) return
   const target = UserAgent.makeURI(`sip:${displayNumber.value}@${form.value.domain}`)
   if (!target) return
+  currentCallMode.value = selectedCallMode.value
+  cameraEnabled.value = selectedCallMode.value === 'video'
   callLabel.value = displayNumber.value
   callError.value = ''
   callState.value = 'dialing'
@@ -552,20 +648,36 @@ async function makeCall() {
   attachSession(inviter, false)
   try {
     await inviter.invite({
-      sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
+      sessionDescriptionHandlerOptions: {
+        constraints: mediaConstraintsForCallMode(selectedCallMode.value),
+      },
     })
   } catch (error) {
-    callError.value = callFailureMessage(error)
-    callState.value = 'idle'
-    currentSession.value = null
+    callError.value = callFailureMessage(error, { videoRequested: selectedCallMode.value === 'video' })
+    resetCallUiState(inviter)
   }
 }
 
 async function answerCall() {
   if (!currentSession.value) return
-  await currentSession.value.accept({
-    sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
-  })
+  const isVideoAnswer = currentCallMode.value === 'video'
+  cameraEnabled.value = isVideoAnswer
+  callError.value = ''
+  try {
+    await currentSession.value.accept({
+      sessionDescriptionHandlerOptions: {
+        constraints: mediaConstraintsForCallMode(currentCallMode.value),
+      },
+    })
+  } catch (error) {
+    callError.value = callFailureMessage(error, { videoRequested: isVideoAnswer })
+    try {
+      currentSession.value.reject?.({ statusCode: 480 })
+    } catch {
+      // Ignore reject failures while we unwind the failed answer.
+    }
+    resetCallUiState(currentSession.value)
+  }
 }
 
 function rejectCall() {
@@ -576,9 +688,7 @@ function rejectCall() {
 function hangup() {
   if (!currentSession.value) return
   const session = currentSession.value
-  callState.value = 'idle'
-  currentSession.value = null
-  callLabel.value = ''
+  resetCallUiState(session)
   if (session.state === SessionState.Established) {
     session.bye()
   } else if (session.state === SessionState.Initial || session.state === SessionState.Establishing) {
@@ -595,6 +705,16 @@ function toggleMute() {
   muted.value = !muted.value
   sdh.peerConnection?.getSenders().forEach((s) => {
     if (s.track?.kind === 'audio') s.track.enabled = !muted.value
+  })
+}
+
+function toggleCamera() {
+  if (!currentSession.value || !isCurrentCallVideo.value) return
+  const sdh = currentSession.value.sessionDescriptionHandler
+  if (!sdh) return
+  cameraEnabled.value = !cameraEnabled.value
+  sdh.peerConnection?.getSenders().forEach((sender) => {
+    if (sender.track?.kind === 'video') sender.track.enabled = cameraEnabled.value
   })
 }
 
@@ -810,6 +930,10 @@ onUnmounted(() => {
   align-items: center;
 }
 .active-meta { text-align: center; margin-top: 24px; }
+.active-meta--video {
+  margin-top: 0;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.45);
+}
 .active-avatar {
   width: 96px; height: 96px;
   border-radius: 50%;
@@ -825,6 +949,48 @@ onUnmounted(() => {
 .active-name { font-size: 24px; font-weight: 600; }
 .active-sub { font-size: 14px; color: rgba(255,255,255,0.6); margin-top: 6px; }
 
+.screen--active-video {
+  padding: 24px 20px 36px;
+}
+.video-stage {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border-radius: 28px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.22));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+}
+.video-stage__remote,
+.video-stage__local {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #111;
+}
+.video-stage__local {
+  position: absolute;
+  right: 14px;
+  bottom: 18px;
+  width: 110px;
+  height: 148px;
+  border-radius: 20px;
+  border: 2px solid rgba(255,255,255,0.22);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+.video-stage__overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 20px 18px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.38) 0%, rgba(0,0,0,0.05) 30%, rgba(0,0,0,0) 55%);
+}
+
 .active-actions {
   margin-top: auto;
   display: flex;
@@ -834,7 +1000,6 @@ onUnmounted(() => {
   padding: 0 24px 12px;
   width: 100%;
 }
-.round-btn-spacer { flex: 0 0 12px; }
 
 /* ─── Idle / keypad screen ─── */
 .screen--idle { padding: 8px 18px 0; }
@@ -845,6 +1010,28 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.call-mode-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 4px 12px 8px;
+}
+.call-mode-toggle__item {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sip-text-2);
+  background: rgba(118, 118, 128, 0.14);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.call-mode-toggle__item.is-active {
+  background: rgba(10, 132, 255, 0.16);
+  color: var(--sip-primary);
+}
+
 .display-area {
   min-height: 70px;
   display: flex;
@@ -852,6 +1039,12 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   padding: 8px 0 12px;
+}
+.display-mode {
+  color: var(--sip-text-2);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
 }
 .display-number {
   font-size: 38px;
