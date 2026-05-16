@@ -38,63 +38,42 @@ Services started:
 - REST API on port 3000
 - Admin UI on port 8030
 
-## Production Deployment (Harbor)
+## Production Deployment (GHCR -> Harbor Sync)
 
-Production servers must not compile the backend or frontend locally. They should only pull immutable images from Harbor and restart containers.
+GitHub Actions publishes backend and frontend images to:
 
-### 1. Prepare `.env`
+- `ghcr.io/wendal/sip3/backend`
+- `ghcr.io/wendal/sip3/frontend`
 
-Copy `.env.example` to `.env` on the production host and set real values:
+The Harbor host is responsible for copying a chosen tag into Harbor:
 
 ```bash
-cp .env.example .env
+ssh root@sip.air32.cn
+cd /opt/sip3
+bash scripts/sync-from-ghcr.sh git-9700c58
 ```
 
-At minimum, set:
+After sync, deploy from Harbor only:
 
 ```bash
-HARBOR_IMAGE_PREFIX=harbor.air32.cn/sip3
-IMAGE_TAG=git-abc1234
-MYSQL_ROOT_PASSWORD=...
-MYSQL_PASSWORD=...
-SIP3__DATABASE__URL=mysql://sip3:...@mysql:3306/sip3
-SIP3__SERVER__PUBLIC_IP=...
-SIP3__TURN__SECRET=...
-```
-
-### 2. Log in to Harbor
-
-```bash
-docker login harbor.air32.cn
-```
-
-Use a Harbor robot account with pull access for the production host.
-
-## Harbor Server Deployment
-
-Use `docker/harbor/docker-compose.yml` together with `docker/harbor/harbor.yml.example` on the registry host. Copy the example config to `harbor.yml`, keep Harbor on `http.port: 8080`, set `external_url: https://harbor.air32.cn`, run Harbor's prepare step, and then start the compose stack. The host nginx should terminate TLS with certbot and proxy to `127.0.0.1:8080`.
-
-### 3. Pull and start the stack
-
-```bash
+export IMAGE_TAG=git-9700c58
 docker compose pull
 docker compose up -d
 docker compose ps
 curl -f http://127.0.0.1:3000/api/health
 ```
 
-### 4. Roll back
-
-To roll back, change `IMAGE_TAG` in `.env` to the previous known-good tag and run:
+To roll back:
 
 ```bash
+export IMAGE_TAG=<previous-good-tag>
 docker compose pull
 docker compose up -d
 ```
 
-### 5. Database migrations
+## Harbor Server Deployment
 
-Database migrations are applied by the backend on startup. Do not run source builds on the production host.
+Use `docker/harbor/docker-compose.yml` together with `docker/harbor/harbor.yml.example` on the registry host. Copy the example config to `harbor.yml`, keep Harbor on `http.port: 8080`, set `external_url: https://harbor.air32.cn`, run Harbor's prepare step, and then start the compose stack. The host nginx should terminate TLS with certbot and proxy to `127.0.0.1:8080`.
 
 ## Local Source Build
 
@@ -218,11 +197,10 @@ The current production layout is expected to be `root@sip.air32.cn:/opt/sip3`.
 ```bash
 ssh root@sip.air32.cn
 cd /opt/sip3
-git fetch --tags origin
-git checkout main
-git pull --ff-only origin main
-git describe --tags --always
-docker compose up -d --build
+bash scripts/sync-from-ghcr.sh git-9700c58
+export IMAGE_TAG=git-9700c58
+docker compose pull
+docker compose up -d
 docker compose ps
 curl -f http://127.0.0.1:3000/api/health
 ```
