@@ -69,10 +69,11 @@ Always add new migration files to both directories. Account identity is `(userna
 
 ## Deployment model
 
-Docker Compose starts MySQL, backend, frontend, and coturn. Production for `sip.air32.cn` is expected under `/opt/sip3` and should be updated with a fast-forward pull plus:
+Docker Compose starts MySQL, backend, frontend, and coturn. Production for `sip.air32.cn` is expected under `/opt/sip3`, pulls pinned images from `harbor.air32.cn/sip3`, and should be updated with:
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 curl -f http://127.0.0.1:3000/api/health
 ```
 

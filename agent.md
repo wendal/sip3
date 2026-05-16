@@ -40,7 +40,7 @@
 
 ## 4. 发布与验证清单
 - 本地：优先执行仓库根目录 `pwsh ./scripts/local-ci.ps1`（覆盖 backend `cargo fmt --check/build/test/clippy` + frontend `npm ci/build`）。
-- 线上：`docker compose up -d --build backend`、`/api/health`、关键日志无异常。
+- 线上：`docker compose pull` + `docker compose up -d`、`/api/health`、关键日志无异常。
 - 业务验收最少覆盖：
   1. MESSAGE 双向收发与入库；
   2. 双向呼叫（1001->1003、1003->1001）；

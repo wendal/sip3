@@ -28,4 +28,4 @@
 - 使用语义化标签发布（如 `v1.3.0`），并同步创建 GitHub Release。
 - 分支完成后及时合并、推送主干，并清理 feature 分支与 worktree，保持仓库整洁。
 - v1.3.0 发布前必须验证四段媒体端口不重叠：通话 relay `10000-10099`、会议 `10100-10199`、语音信箱 `10200-10299`、WebRTC `20000-20099`。
-- 生产部署路径为 `/opt/sip3` 时，优先 `git pull --ff-only` + `docker compose up -d --build`，不要覆盖生产本地配置或密钥。
+- 生产部署路径为 `/opt/sip3` 时，优先 `git pull --ff-only` + `docker compose pull` + `docker compose up -d`，不要覆盖生产本地配置或密钥。

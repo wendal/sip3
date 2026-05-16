@@ -67,7 +67,8 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 ```bash
 git clone https://github.com/wendal/sip3.git
 cd sip3
-docker compose up -d
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 Open **http://localhost:8030** for the admin UI (default: `admin` / `admin123`).
@@ -215,6 +216,9 @@ Admin UI ──HTTP 8030──► Nginx ─────────► REST API 
 ```bash
 # Local CI parity check (recommended before push)
 pwsh ./scripts/local-ci.ps1
+
+# Local Docker stack with source builds
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 # Backend (Rust)
 cd backend

@@ -1,0 +1,19 @@
+http:
+  port: 8080
+
+external_url: https://harbor.air32.cn
+
+harbor_admin_password: ChangeMe_UseAStrongPassword
+
+database:
+  password: ChangeMe_UseAStrongDatabasePassword
+
+data_volume: /data
+
+trivy:
+  ignore_unfixed: false
+  skip_update: false
+  offline_scan: false
+  security_check: vuln
+  insecure: false
+  timeout: 5m0s

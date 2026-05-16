@@ -1,58 +1,54 @@
-version: '3.9'
-
 services:
   mysql:
-    image: mysql:8.0
+    image: mysql:8.0.37
     container_name: sip3-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: sip3
-      MYSQL_USER: sip3
-      MYSQL_PASSWORD: sip3pass
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sip3}
+      MYSQL_USER: ${MYSQL_USER:-sip3}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
     ports:
       - "3306:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "sip3", "-psip3pass"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER:-sip3}", "-p${MYSQL_PASSWORD:?set MYSQL_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
 
   backend:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.backend
+    image: ${HARBOR_IMAGE_PREFIX:?set HARBOR_IMAGE_PREFIX}/backend:${IMAGE_TAG:?set IMAGE_TAG}
     container_name: sip3-backend
     restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
     environment:
-      SIP3__DATABASE__URL: "mysql://sip3:sip3pass@mysql:3306/sip3"
-      SIP3__SERVER__SIP_HOST: "0.0.0.0"
-      SIP3__SERVER__SIP_PORT: "5060"
-      SIP3__SERVER__API_HOST: "0.0.0.0"
-      SIP3__SERVER__API_PORT: "3000"
-      SIP3__SERVER__SIP_DOMAIN: "sip.air32.cn"
-      SIP3__SERVER__PUBLIC_IP: "154.8.159.79"
-      SIP3__SERVER__RTP_PORT_MIN: "10000"
-      SIP3__SERVER__RTP_PORT_MAX: "10099"
-      SIP3__SERVER__CONFERENCE_RTP_PORT_MIN: "10100"
-      SIP3__SERVER__CONFERENCE_RTP_PORT_MAX: "10199"
-      SIP3__SERVER__VOICEMAIL_ACCESS_EXTENSION: "*97"
-      SIP3__SERVER__VOICEMAIL_RTP_PORT_MIN: "10200"
-      SIP3__SERVER__VOICEMAIL_RTP_PORT_MAX: "10299"
-      SIP3__SERVER__VOICEMAIL_STORAGE_DIR: "/app/voicemail"
-      SIP3__SERVER__VOICEMAIL_PROMPT_DIR: "/app/voicemail/prompts"
-      SIP3__SERVER__WEBRTC_PORT_MIN: "20000"
-      SIP3__SERVER__WEBRTC_PORT_MAX: "20099"
-      SIP3__AUTH__REALM: "sip.air32.cn"
-      SIP3__TURN__SECRET: ${TURN_SECRET:-change_me_in_production_secret}
-      SIP3__TURN__SERVER: ""
-      RUST_LOG: "info"
+      SIP3__DATABASE__URL: ${SIP3__DATABASE__URL:?set SIP3__DATABASE__URL}
+      SIP3__SERVER__SIP_HOST: ${SIP3__SERVER__SIP_HOST:-0.0.0.0}
+      SIP3__SERVER__SIP_PORT: ${SIP3__SERVER__SIP_PORT:-5060}
+      SIP3__SERVER__API_HOST: ${SIP3__SERVER__API_HOST:-0.0.0.0}
+      SIP3__SERVER__API_PORT: ${SIP3__SERVER__API_PORT:-3000}
+      SIP3__SERVER__SIP_DOMAIN: ${SIP3__SERVER__SIP_DOMAIN:-sip.air32.cn}
+      SIP3__SERVER__PUBLIC_IP: ${SIP3__SERVER__PUBLIC_IP:?set SIP3__SERVER__PUBLIC_IP}
+      SIP3__SERVER__RTP_PORT_MIN: ${SIP3__SERVER__RTP_PORT_MIN:-10000}
+      SIP3__SERVER__RTP_PORT_MAX: ${SIP3__SERVER__RTP_PORT_MAX:-10099}
+      SIP3__SERVER__CONFERENCE_RTP_PORT_MIN: ${SIP3__SERVER__CONFERENCE_RTP_PORT_MIN:-10100}
+      SIP3__SERVER__CONFERENCE_RTP_PORT_MAX: ${SIP3__SERVER__CONFERENCE_RTP_PORT_MAX:-10199}
+      SIP3__SERVER__VOICEMAIL_ACCESS_EXTENSION: ${SIP3__SERVER__VOICEMAIL_ACCESS_EXTENSION:-*97}
+      SIP3__SERVER__VOICEMAIL_RTP_PORT_MIN: ${SIP3__SERVER__VOICEMAIL_RTP_PORT_MIN:-10200}
+      SIP3__SERVER__VOICEMAIL_RTP_PORT_MAX: ${SIP3__SERVER__VOICEMAIL_RTP_PORT_MAX:-10299}
+      SIP3__SERVER__VOICEMAIL_STORAGE_DIR: ${SIP3__SERVER__VOICEMAIL_STORAGE_DIR:-/app/voicemail}
+      SIP3__SERVER__VOICEMAIL_PROMPT_DIR: ${SIP3__SERVER__VOICEMAIL_PROMPT_DIR:-/app/voicemail/prompts}
+      SIP3__SERVER__WEBRTC_PORT_MIN: ${SIP3__SERVER__WEBRTC_PORT_MIN:-20000}
+      SIP3__SERVER__WEBRTC_PORT_MAX: ${SIP3__SERVER__WEBRTC_PORT_MAX:-20099}
+      SIP3__AUTH__REALM: ${SIP3__AUTH__REALM:-sip.air32.cn}
+      SIP3__TURN__SECRET: ${SIP3__TURN__SECRET:?set SIP3__TURN__SECRET}
+      SIP3__TURN__SERVER: ${SIP3__TURN__SERVER:-}
+      RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "5060:5060/udp"
       - "5061:5061/tcp"
@@ -73,9 +69,7 @@ services:
       start_period: 30s
 
   frontend:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.frontend
+    image: ${HARBOR_IMAGE_PREFIX:?set HARBOR_IMAGE_PREFIX}/frontend:${IMAGE_TAG:?set IMAGE_TAG}
     container_name: sip3-frontend
     restart: unless-stopped
     depends_on:
@@ -85,7 +79,7 @@ services:
       - "8030:80"
 
   coturn:
-    image: coturn/coturn:latest
+    image: coturn/coturn:4.11.0
     container_name: sip3-coturn
     restart: unless-stopped
     # Ports: STUN/TURN UDP+TCP (3478), TURNS TLS (5349), relay range (49152-49200)

@@ -3,9 +3,11 @@
 ## Prerequisites
 
 - Docker Engine 24+ and Docker Compose v2
-- MySQL 8.0 (if deploying without Docker)
-- Rust 1.95+ (for building from source; required for Rust 2024 edition)
-- Node.js 20+ (for frontend from source)
+- Access to the Harbor registry at `harbor.air32.cn`
+- A host-specific `.env` file copied from `.env.example`
+- `docker login harbor.air32.cn` credentials for the deploy user
+
+Rust and Node.js are only needed for local source builds with the development compose overlay.
 
 ## Quick Start with Docker Compose
 
@@ -14,8 +16,11 @@
 git clone https://github.com/wendal/sip3.git
 cd sip3
 
-# Start all services
-docker compose up -d
+# Prepare local settings
+cp .env.example .env
+
+# Local source-built stack
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 # View logs
 docker compose logs -f
@@ -33,100 +38,71 @@ Services started:
 - REST API on port 3000
 - Admin UI on port 8030
 
-## Manual Deployment
+## Production Deployment (Harbor)
 
-### 1. Database Setup
+Production servers must not compile the backend or frontend locally. They should only pull immutable images from Harbor and restart containers.
 
-```sql
-CREATE DATABASE sip3;
--- Using root or create a dedicated user:
--- CREATE USER 'sip3'@'%' IDENTIFIED BY 'sip3pass';
--- GRANT ALL PRIVILEGES ON sip3.* TO 'sip3'@'%';
--- FLUSH PRIVILEGES;
-```
+### 1. Prepare `.env`
 
-Then run migrations:
-```bash
-mysql -u root -proot sip3 < migrations/001_initial.sql
-mysql -u root -proot sip3 < migrations/002_seed.sql
-mysql -u root -proot sip3 < migrations/003_media_sessions.sql
-mysql -u root -proot sip3 < migrations/004_admin_users.sql
-mysql -u root -proot sip3 < migrations/005_call_indexes.sql
-mysql -u root -proot sip3 < migrations/006_acl.sql
-mysql -u root -proot sip3 < migrations/007_presence.sql
-mysql -u root -proot sip3 < migrations/008_numeric_seed_accounts.sql
-mysql -u root -proot sip3 < migrations/009_security_events.sql
-mysql -u root -proot sip3 < migrations/010_sip_messages.sql
-mysql -u root -proot sip3 < migrations/011_conference_rooms.sql
-mysql -u root -proot sip3 < migrations/012_voicemail.sql
-```
-
-### 2. Backend Configuration
-
-Create `backend/config.toml`:
-```toml
-[server]
-sip_host = "0.0.0.0"
-sip_port = 5060
-sip_domain = "sip.air32.cn"
-api_host = "0.0.0.0"
-api_port = 3000
-# Public IPv4 of this server written into rewritten SDP c= lines
-public_ip = "154.8.159.79"
-# UDP port range for RTP media relay
-rtp_port_min = 10000
-rtp_port_max = 10099
-# UDP port range for conference mixing
-conference_rtp_port_min = 10100
-conference_rtp_port_max = 10199
-# Voicemail access, storage, prompts, and media range
-voicemail_access_extension = "*97"
-voicemail_no_answer_secs = 25
-voicemail_max_message_secs = 120
-voicemail_idle_timeout_secs = 10
-voicemail_storage_dir = "voicemail"
-voicemail_prompt_dir = "voicemail/prompts"
-voicemail_rtp_port_min = 10200
-voicemail_rtp_port_max = 10299
-
-[database]
-url = "mysql://root:root@localhost:3306/sip3"
-max_connections = 10
-
-[auth]
-realm = "sip.air32.cn"
-registration_expires = 3600
-```
-
-Or set environment variables (prefix `SIP3__`):
-```bash
-export SIP3__SERVER__SIP_DOMAIN=sip.air32.cn
-export SIP3__SERVER__PUBLIC_IP=154.8.159.79
-export SIP3__SERVER__VOICEMAIL_ACCESS_EXTENSION='*97'
-export SIP3__SERVER__VOICEMAIL_NO_ANSWER_SECS=25
-export SIP3__SERVER__VOICEMAIL_STORAGE_DIR=voicemail
-export SIP3__SERVER__VOICEMAIL_PROMPT_DIR=voicemail/prompts
-export SIP3__SERVER__VOICEMAIL_RTP_PORT_MIN=10200
-export SIP3__SERVER__VOICEMAIL_RTP_PORT_MAX=10299
-export SIP3__DATABASE__URL=mysql://root:root@localhost:3306/sip3
-```
-
-### 3. Build and Run Backend
+Copy `.env.example` to `.env` on the production host and set real values:
 
 ```bash
-cd backend
-cargo build --release
-./target/release/sip3-backend
+cp .env.example .env
 ```
 
-### 4. Build and Serve Frontend
+At minimum, set:
 
 ```bash
-cd frontend
-npm ci
-npm run build
-# Serve dist/ with any static file server, e.g.:
-npx serve dist -p 80
+HARBOR_IMAGE_PREFIX=harbor.air32.cn/sip3
+IMAGE_TAG=git-abc1234
+MYSQL_ROOT_PASSWORD=...
+MYSQL_PASSWORD=...
+SIP3__DATABASE__URL=mysql://sip3:...@mysql:3306/sip3
+SIP3__SERVER__PUBLIC_IP=...
+SIP3__TURN__SECRET=...
+```
+
+### 2. Log in to Harbor
+
+```bash
+docker login harbor.air32.cn
+```
+
+Use a Harbor robot account with pull access for the production host.
+
+## Harbor Server Deployment
+
+Use `docker/harbor/docker-compose.yml` together with `docker/harbor/harbor.yml.example` on the registry host. Copy the example config to `harbor.yml`, keep Harbor on `http.port: 8080`, set `external_url: https://harbor.air32.cn`, run Harbor's prepare step, and then start the compose stack. The host nginx should terminate TLS with certbot and proxy to `127.0.0.1:8080`.
+
+### 3. Pull and start the stack
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+curl -f http://127.0.0.1:3000/api/health
+```
+
+### 4. Roll back
+
+To roll back, change `IMAGE_TAG` in `.env` to the previous known-good tag and run:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+### 5. Database migrations
+
+Database migrations are applied by the backend on startup. Do not run source builds on the production host.
+
+## Local Source Build
+
+For local development, use the dev overlay:
+
+```bash
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 ## RTP Media Relay
