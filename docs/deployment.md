@@ -48,6 +48,8 @@ GitHub Actions publishes backend and frontend images to:
 
 The Harbor host is responsible for copying a chosen tag into Harbor. Production still pulls only from Harbor.
 
+After the first CI publish, make the GHCR backend/frontend packages public (or otherwise grant read access) before running Harbor-host sync. `scripts/sync-from-ghcr.sh` reads from GHCR without authentication in this flow, and newly created GHCR packages are private by default.
+
 ### 1. Prepare `.env`
 
 Copy `.env.example` to `.env` on the production host and set real values:
@@ -96,9 +98,11 @@ skopeo inspect docker://harbor.air32.cn/sip3/frontend:git-<shortsha>
 ### 5. Deploy from Harbor only
 
 ```bash
-grep -q '^IMAGE_TAG=' .env \
-  && sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=git-<shortsha>/" .env \
-  || echo "IMAGE_TAG=git-<shortsha>" >> .env
+if grep -q '^IMAGE_TAG=' .env; then
+  sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=git-<shortsha>/" .env
+else
+  echo "IMAGE_TAG=git-<shortsha>" >> .env
+fi
 grep '^IMAGE_TAG=' .env
 docker compose pull
 docker compose up -d
@@ -109,9 +113,11 @@ curl -f http://127.0.0.1:3000/api/health
 ### 6. Roll back
 
 ```bash
-grep -q '^IMAGE_TAG=' .env \
-  && sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=<previous-good-tag>/" .env \
-  || echo "IMAGE_TAG=<previous-good-tag>" >> .env
+if grep -q '^IMAGE_TAG=' .env; then
+  sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=<previous-good-tag>/" .env
+else
+  echo "IMAGE_TAG=<previous-good-tag>" >> .env
+fi
 grep '^IMAGE_TAG=' .env
 docker compose pull
 docker compose up -d
