@@ -41,6 +41,11 @@ Services started:
 
 ## Production Deployment (GHCR -> Harbor Sync)
 
+### CI topology
+
+- GitHub Actions -> GHCR (`ghcr.io/wendal/sip3/backend`, `ghcr.io/wendal/sip3/frontend`)
+- GitLab CI -> Harbor (`harbor.air32.cn/sip3/backend`, `harbor.air32.cn/sip3/frontend`)
+
 GitHub Actions publishes backend and frontend images to:
 
 - `ghcr.io/wendal/sip3/backend`
@@ -49,6 +54,21 @@ GitHub Actions publishes backend and frontend images to:
 The Harbor host is responsible for copying a chosen tag into Harbor. Production still pulls only from Harbor.
 
 After the first CI publish, make the GHCR backend/frontend packages public (or otherwise grant read access) before running Harbor-host sync. `scripts/sync-from-ghcr.sh` reads from GHCR without authentication in this flow, and newly created GHCR packages are private by default.
+
+### push_both_manual
+
+When triggering both CI pipelines manually, push the same commit to both remotes:
+
+```bash
+git push origin main
+git push gitlab main
+```
+
+GitLab remote URL:
+
+```bash
+ssh://git@sh.air32.cn:222/wendal/sip3.git
+```
 
 ### 1. Prepare `.env`
 
@@ -71,6 +91,7 @@ SIP3__TURN__SECRET=...
 ```
 
 `IMAGE_TAG` must match the exact tag that you copy from GHCR into Harbor.
+Use `HARBOR_IMAGE_PREFIX=harbor.air32.cn/sip3` and `IMAGE_TAG=git-<shortsha>` for production deploys.
 
 ### 2. Log in to Harbor on the Harbor sync host
 
@@ -96,6 +117,8 @@ skopeo inspect docker://harbor.air32.cn/sip3/frontend:git-<shortsha>
 ```
 
 ### 5. Deploy from Harbor only
+
+In production, production does not source-build and is Harbor only.
 
 ```bash
 if grep -q '^IMAGE_TAG=' .env; then
