@@ -26,7 +26,7 @@
     </nav>
 
     <div v-if="!collapsed" class="side-nav__footer">
-      v0.1 · Open Source SIP Server
+      {{ footerVersionText }}
     </div>
   </div>
 </template>
@@ -37,6 +37,8 @@ import {
   DataLine, User, Lock, Monitor, WarningFilled, Setting, PhoneFilled, ChatDotRound,
   MessageBox,
 } from '@element-plus/icons-vue'
+import pkg from '../../package.json'
+import { adminVersionText } from '../utils/adminVersion.mjs'
 
 defineProps({
   collapsed: { type: Boolean, default: false },
@@ -44,6 +46,7 @@ defineProps({
 defineEmits(['navigate'])
 
 const route = useRoute()
+const footerVersionText = adminVersionText(pkg.version)
 
 const items = [
   { path: '/dashboard',   label: '控制台',   icon: DataLine },
