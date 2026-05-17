@@ -79,7 +79,7 @@ curl -f http://127.0.0.1:3000/api/health
 
 Keep Docker UDP port ranges modest. Mapping thousands of ports can make Docker startup slow or appear hung because each mapping expands into firewall/iptables rules.
 
-## v1.3.0 boundaries
+## v1.5.0 boundaries
 
 - Conference MVP supports Linphone-compatible audio rooms only: no PIN, SRTP, video, Opus, or browser/WebRTC conference participation.
 - Voicemail MVP supports recording, storage, MWI, admin management, and basic `*97` access readiness. Full playback IVR/navigation/save/delete, mailbox PINs, busy-to-voicemail, email, SRTP, Opus, and browser/WebRTC voicemail are future work.

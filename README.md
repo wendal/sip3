@@ -54,13 +54,13 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 - ✅ Browser softphone at `/phone` — SIP.js + WebRTC audio + browser-to-browser video, TURN auto-configured
 - ✅ Search, pagination, de-register, call statistics
 
-### What's new in v1.3.0
+### What's new in v1.5.0
 
-- ✅ Added Linphone-compatible **audio conference rooms** with server-side G.711 mixing and `*6` mute.
-- ✅ Added **voicemail MVP**: offline/no-answer recording, WAV storage, MWI, `*97` access readiness, and admin UI.
-- ✅ Added dedicated media ranges: relay `10000-10099`, conference `10100-10199`, voicemail `10200-10299`, WebRTC `20000-20099`.
-- ✅ Hardened voicemail storage, MWI source validation, no-answer/CANCEL races, and message duration validation.
-- ✅ Added [docs/architecture.md](docs/architecture.md) as the project architecture reference.
+- ✅ Added `/phone` browser-to-browser video calling MVP with pre-call media selection and negotiated video fallback handling.
+- ✅ Added dual CI publishing topology: **GitHub Actions -> GHCR** and **GitLab CI -> Harbor** for domestic build/publish paths.
+- ✅ Updated production deployment model to **Harbor-only pulls** with explicit source-path verification and rollback-by-tag flow.
+- ✅ Fixed admin sidebar footer to render version text from frontend package metadata instead of a hardcoded value.
+- ✅ Hardened GitLab Harbor publishing safety by restricting publish job execution to `main` and tags.
 
 ### Quick Start
 

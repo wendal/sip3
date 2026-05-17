@@ -4,13 +4,24 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [v1.5.0] - 2026-05-17
+
 ### Added
 - Added `/phone` browser-to-browser video calling MVP with pre-call audio/video selection, remote video rendering, and local preview.
 - Added browser softphone media helper coverage for negotiated video fallback and local sender-track shutdown.
+- Added GitLab CI pipeline (`.gitlab-ci.yml`) for domestic self-hosted runner builds and Harbor image publishing.
 
 ### Changed
 - Updated `/phone` call teardown to stop local sender tracks on hangup, disconnect, failed setup, and video-to-audio fallback.
 - Updated README and architecture docs to clarify that `/phone` video currently supports browser-to-browser calls only.
+- Updated deployment documentation for dual CI topology (GitHub->GHCR and GitLab->Harbor), mutually exclusive Harbor source paths, and provenance checks.
+- Updated `.env.example` Harbor deploy defaults to a Harbor-only production model with immutable tag guidance.
+- Bumped backend and frontend package metadata to `1.5.0`.
+
+### Fixed
+- Fixed admin sidebar footer version display to use the frontend package version instead of hardcoded `v0.1`.
+- Fixed GitLab CI `docker_publish` dind daemon connectivity configuration.
+- Fixed Harbor publish safety by restricting GitLab CI image publishing to `main` and tags.
 
 ## [v1.3.0] - 2026-05-16
 
