@@ -95,7 +95,7 @@ SIP3__SERVER__PUBLIC_IP=...
 SIP3__TURN__SECRET=...
 ```
 
-`IMAGE_TAG` must match the exact tag that you copy from GHCR into Harbor.
+`IMAGE_TAG` must match the selected source path tag (GitLab CI direct to Harbor OR GHCR-to-Harbor sync).
 Use `HARBOR_IMAGE_PREFIX=harbor.air32.cn/sip3` and `IMAGE_TAG=git-<shortsha>` for production deploys.
 
 ### 2. Log in to Harbor on the Harbor sync host
@@ -124,16 +124,33 @@ bash scripts/sync-from-ghcr.sh git-<shortsha>
 
 ### 4. Pre-deploy verification (required)
 
-Verify the Harbor tag exists, record digest, and confirm source path before deployment:
+Verify source provenance before deployment. Deployment is allowed only if the selected path passes:
 
-- **Path A (GitLab CI direct):** Harbor tag/digest must match the GitLab CI-produced artifact for `git-<shortsha>`.
-- **Path B (GHCR sync):** Harbor tag/digest must match the GHCR source artifact copied by `scripts/sync-from-ghcr.sh`.
-- If source path cannot be confirmed, stop and resolve before deploy.
+#### Path A (GitLab CI direct) - Harbor-only checks
 
 ```bash
-skopeo inspect docker://harbor.air32.cn/sip3/backend:git-<shortsha>
-skopeo inspect docker://harbor.air32.cn/sip3/frontend:git-<shortsha>
+H_BACKEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://harbor.air32.cn/sip3/backend:git-<shortsha>)
+H_FRONTEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://harbor.air32.cn/sip3/frontend:git-<shortsha>)
+echo "backend=${H_BACKEND_DIGEST}"
+echo "frontend=${H_FRONTEND_DIGEST}"
 ```
+
+Pass criteria (Path A): both Harbor image digests resolve successfully (non-empty) for the same `IMAGE_TAG` before deploy.
+
+#### Path B (GHCR sync) - digest equality checks
+
+```bash
+G_BACKEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/wendal/sip3/backend:git-<shortsha>)
+G_FRONTEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/wendal/sip3/frontend:git-<shortsha>)
+H_BACKEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://harbor.air32.cn/sip3/backend:git-<shortsha>)
+H_FRONTEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://harbor.air32.cn/sip3/frontend:git-<shortsha>)
+test "$G_BACKEND_DIGEST" = "$H_BACKEND_DIGEST"
+test "$G_FRONTEND_DIGEST" = "$H_FRONTEND_DIGEST"
+echo "backend=${G_BACKEND_DIGEST} == ${H_BACKEND_DIGEST}"
+echo "frontend=${G_FRONTEND_DIGEST} == ${H_FRONTEND_DIGEST}"
+```
+
+Pass criteria (Path B): GHCR and Harbor digests are equal for both backend and frontend images at the selected `IMAGE_TAG`.
 
 ### 5. Deploy from Harbor only
 
