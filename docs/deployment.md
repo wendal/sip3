@@ -44,7 +44,7 @@ Services started:
 ### CI topology
 
 - GitHub Actions -> GHCR (`ghcr.io/wendal/sip3/backend`, `ghcr.io/wendal/sip3/frontend`)
-- GitLab CI -> Harbor (`harbor.air32.cn/sip3/backend`, `harbor.air32.cn/sip3/frontend`)
+- GitLab CI -> Harbor (`harbor.air32.cn/sip3/backend`, `harbor.air32.cn/sip3/frontend`) via self-hosted runners tagged `linux`
 
 GitHub Actions publishes backend and frontend images to:
 
