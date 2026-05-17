@@ -9,7 +9,8 @@ use tracing::{debug, info, warn};
 use super::conference::Conference;
 use super::conference_media::ConferenceMedia;
 use super::media::{
-    MediaRelay, is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp_media, sdp_rtp_addr,
+    MediaRelay, is_invite_200_ok_with_sdp, rewrite_content_length, rewrite_sdp_media,
+    sdp_connection_ip, sdp_rtp_addr, sdp_video_port,
 };
 use super::presence::Presence;
 use super::proxy::Proxy;
@@ -726,6 +727,14 @@ impl SipHandler {
                         self.webrtc_gateway
                             .set_sip_peer(&call_id, sip_rtp_addr)
                             .await;
+                        if let (Some(ip), Some(video_port)) =
+                            (sdp_connection_ip(&msg.body), sdp_video_port(&msg.body))
+                            && let Ok(video_addr) = format!("{}:{}", ip, video_port).parse()
+                        {
+                            self.webrtc_gateway
+                                .set_sip_video_peer(&call_id, video_addr)
+                                .await;
+                        }
                     }
                     rewrite_content_length(&relayed, &answer_sdp)
                 } else if let Some(new_sdp) = self.rewrite_200ok_sdp(&call_id, &msg.body).await {

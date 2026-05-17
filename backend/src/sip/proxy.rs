@@ -11,8 +11,8 @@ use super::handler::{
     extract_uri, md5_hex, uri_username,
 };
 use super::media::{
-    MediaRelay, is_webrtc_sdp, make_plain_rtp_sdp, parse_sdp_media_sections, rewrite_sdp_media,
-    sdp_rtp_addr,
+    MediaRelay, SdpMediaKind, is_webrtc_sdp, make_plain_rtp_sdp, parse_sdp_media_sections,
+    rewrite_sdp_media, sdp_connection_ip, sdp_rtp_addr, sdp_video_port,
 };
 use super::registrar::routable_contact_uri;
 use super::transport::TransportRegistry;
@@ -329,20 +329,31 @@ impl Proxy {
         } else if callee_is_stream
             && should_bridge_plain_sip_to_websocket_target(&contact_uri, &msg.body)
         {
+            let has_video = parse_sdp_media_sections(&msg.body)
+                .iter()
+                .any(|m| m.kind == SdpMediaKind::Video && m.active);
             // SIP-phone-originated INVITE to browser callee:
             // create reverse WebRTC bridge and send browser-compatible offer.
             match self
                 .webrtc_gateway
-                .create_session_for_sip_caller(call_id.clone())
+                .create_session_for_sip_caller(call_id.clone(), has_video)
                 .await
             {
-                Ok((webrtc_offer_sdp, sip_port)) => {
+                Ok((webrtc_offer_sdp, sip_audio_port, sip_video_port)) => {
                     if let Some(sip_addr) = sdp_rtp_addr(&msg.body) {
                         self.webrtc_gateway.set_sip_peer(&call_id, sip_addr).await;
                     }
+                    if let (Some(ip), Some(video_port)) =
+                        (sdp_connection_ip(&msg.body), sdp_video_port(&msg.body))
+                        && let Ok(video_addr) = format!("{}:{}", ip, video_port).parse()
+                    {
+                        self.webrtc_gateway
+                            .set_sip_video_peer(&call_id, video_addr)
+                            .await;
+                    }
                     info!(
-                        "Reverse WebRTC session for {}: forwarding browser offer (sip port {})",
-                        call_id, sip_port
+                        "Reverse WebRTC session for {}: forwarding browser offer (audio {}, video {:?})",
+                        call_id, sip_audio_port, sip_video_port
                     );
                     Some(webrtc_offer_sdp)
                 }
@@ -355,20 +366,27 @@ impl Proxy {
                 }
             }
         } else if !msg.body.is_empty() && is_webrtc_sdp(&msg.body) {
+            let has_video = parse_sdp_media_sections(&msg.body)
+                .iter()
+                .any(|m| m.kind == SdpMediaKind::Video && m.active);
             // Browser-originated WebRTC INVITE: create a WebRTC session and
             // replace the WebRTC SDP with a plain RTP offer for the SIP phone.
             match self
                 .webrtc_gateway
-                .create_session(call_id.clone(), &msg.body)
+                .create_session(call_id.clone(), &msg.body, has_video)
                 .await
             {
-                Ok((_answer_sdp, sip_port)) => {
+                Ok((_answer_sdp, sip_audio_port, sip_video_port)) => {
                     info!(
-                        "WebRTC session for {}: forwarding with plain RTP port {}",
-                        call_id, sip_port
+                        "WebRTC session for {}: forwarding with plain RTP ports audio {}, video {:?}",
+                        call_id, sip_audio_port, sip_video_port
                     );
                     let public_ip = &self.cfg.server.public_ip;
-                    Some(make_plain_rtp_sdp(public_ip, sip_port))
+                    Some(make_plain_rtp_sdp(
+                        public_ip,
+                        sip_audio_port,
+                        sip_video_port,
+                    ))
                 }
                 Err(e) => {
                     warn!("WebRTC session creation failed for {}: {}", call_id, e);

@@ -14,8 +14,8 @@ mod tests {
         parse_auth_params, strip_proxy_via, uri_username,
     };
     use sip3_backend::sip::media::{
-        MediaRelay, SdpMediaKind, parse_sdp_media_sections, rewrite_sdp, rewrite_sdp_media,
-        sdp_audio_port, sdp_has_crypto,
+        MediaRelay, SdpMediaKind, make_plain_rtp_sdp, parse_sdp_media_sections, rewrite_sdp,
+        rewrite_sdp_media, sdp_audio_port, sdp_has_crypto, sdp_video_port,
     };
     use sip3_backend::sip::proxy::{
         CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL, Proxy,
@@ -1081,6 +1081,29 @@ mod tests {
         let sdp =
             "m=audio 12345 RTP/SAVP 0 8\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:key==\r\n";
         assert_eq!(sdp_audio_port(sdp), Some(12345));
+    }
+
+    #[test]
+    fn test_sdp_video_port_extraction() {
+        let sdp = "v=0\r\n\
+                   o=alice 1234 1 IN IP4 192.0.2.10\r\n\
+                   s=-\r\n\
+                   c=IN IP4 192.0.2.10\r\n\
+                   t=0 0\r\n\
+                   m=audio 12345 RTP/AVP 0 8\r\n\
+                   m=video 22346 RTP/AVP 96\r\n\
+                   a=rtpmap:96 H264/90000\r\n";
+        assert_eq!(sdp_video_port(sdp), Some(22346));
+    }
+
+    #[test]
+    fn test_make_plain_rtp_sdp_can_include_video_mline() {
+        let sdp = make_plain_rtp_sdp("203.0.113.10", 10000, Some(10002));
+        assert!(sdp.contains("c=IN IP4 203.0.113.10"));
+        assert!(sdp.contains("m=audio 10000 RTP/AVP 0 8"));
+        assert!(sdp.contains("m=video 10002 RTP/AVP 96 97"));
+        assert!(sdp.contains("a=rtpmap:96 H264/90000"));
+        assert!(sdp.contains("a=rtpmap:97 VP8/90000"));
     }
 
     #[test]

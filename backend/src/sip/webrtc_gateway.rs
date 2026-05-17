@@ -7,7 +7,7 @@
 //! SIP phone ─► sip_socket ──► local_track ──► RTCPeerConnection ─(DTLS-SRTP)─► Browser
 //! ```
 
-use super::media::make_plain_rtp_sdp;
+use super::media::{SdpMediaKind, make_plain_rtp_sdp};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -20,7 +20,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MIME_TYPE_PCMA, MIME_TYPE_PCMU, MediaEngine};
+use webrtc::api::media_engine::{
+    MIME_TYPE_H264, MIME_TYPE_PCMA, MIME_TYPE_PCMU, MIME_TYPE_VP8, MediaEngine,
+};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::interceptor::registry::Registry;
@@ -46,12 +48,16 @@ enum BridgeFlow {
 struct WebRtcSession {
     pc: Arc<RTCPeerConnection>,
     flow: BridgeFlow,
-    /// The SIP phone's RTP address (set from 200 OK SDP or learned from first packet).
-    sip_peer: Arc<Mutex<Option<SocketAddr>>>,
+    sip_audio: SipMediaChannel,
+    sip_video: Option<SipMediaChannel>,
     /// SDP to send back to the original SIP transaction caller in 200 OK.
     answer_sdp: String,
     created_at: Instant,
-    /// Background task forwarding SIP phone RTP → local track → browser.
+}
+
+struct SipMediaChannel {
+    socket: Arc<UdpSocket>,
+    sip_peer: Arc<Mutex<Option<SocketAddr>>>,
     sip_rx_task: JoinHandle<()>,
 }
 
@@ -83,15 +89,17 @@ impl WebRtcGateway {
 
     /// Create a WebRTC session for a browser-originated INVITE.
     ///
-    /// Returns `(webrtc_answer_sdp, sip_rtp_port)`:
+    /// Returns `(webrtc_answer_sdp, sip_audio_rtp_port, sip_video_rtp_port)`:
     /// - `webrtc_answer_sdp`: the answer SDP to send back to the browser in 200 OK
     /// - `sip_rtp_port`: the port to include in the forwarded INVITE to the SIP phone
     pub async fn create_session(
         &self,
         call_id: String,
         browser_offer_sdp: &str,
-    ) -> Result<(String, u16)> {
-        let (pc, sip_peer, sip_rx_task, sip_rtp_port) = self.prepare_session(&call_id).await?;
+        with_video: bool,
+    ) -> Result<(String, u16, Option<u16>)> {
+        let (pc, sip_audio, sip_video, sip_audio_port, sip_video_port) =
+            self.prepare_session(&call_id, with_video).await?;
 
         // --- SDP negotiation (browser offer -> gateway answer) ---
         let offer = RTCSessionDescription::offer(browser_offer_sdp.to_owned())?;
@@ -112,27 +120,32 @@ impl WebRtcGateway {
         let session = WebRtcSession {
             pc,
             flow: BridgeFlow::BrowserCaller,
-            sip_peer,
+            sip_audio,
+            sip_video,
             answer_sdp: answer_sdp.clone(),
             created_at: Instant::now(),
-            sip_rx_task,
         };
         self.sessions.lock().await.insert(call_id.clone(), session);
         info!(
-            "WebRTC session created for {}: sip_port={}",
-            call_id, sip_rtp_port
+            "WebRTC session created for {}: sip_audio_port={}, sip_video_port={:?}",
+            call_id, sip_audio_port, sip_video_port
         );
-        Ok((answer_sdp, sip_rtp_port))
+        Ok((answer_sdp, sip_audio_port, sip_video_port))
     }
 
     /// Create a WebRTC session for a SIP-phone-originated INVITE where the
     /// callee is a browser over WS/WSS.
     ///
-    /// Returns `(webrtc_offer_sdp, sip_rtp_port)`:
+    /// Returns `(webrtc_offer_sdp, sip_audio_rtp_port, sip_video_rtp_port)`:
     /// - `webrtc_offer_sdp`: offer to forward to browser callee
     /// - `sip_rtp_port`: gateway RTP port used in SIP-side 200 answer
-    pub async fn create_session_for_sip_caller(&self, call_id: String) -> Result<(String, u16)> {
-        let (pc, sip_peer, sip_rx_task, sip_rtp_port) = self.prepare_session(&call_id).await?;
+    pub async fn create_session_for_sip_caller(
+        &self,
+        call_id: String,
+        with_video: bool,
+    ) -> Result<(String, u16, Option<u16>)> {
+        let (pc, sip_audio, sip_video, sip_audio_port, sip_video_port) =
+            self.prepare_session(&call_id, with_video).await?;
 
         // --- SDP negotiation (gateway offer -> browser answer later) ---
         let offer = pc.create_offer(None).await?;
@@ -146,34 +159,36 @@ impl WebRtcGateway {
         let webrtc_offer_sdp = local_desc.sdp.clone();
 
         // SIP caller should receive a plain RTP answer from gateway.
-        let sip_answer_sdp = make_plain_rtp_sdp(&self.public_ip, sip_rtp_port);
+        let sip_answer_sdp = make_plain_rtp_sdp(&self.public_ip, sip_audio_port, sip_video_port);
 
         let session = WebRtcSession {
             pc,
             flow: BridgeFlow::SipCaller,
-            sip_peer,
+            sip_audio,
+            sip_video,
             answer_sdp: sip_answer_sdp.clone(),
             created_at: Instant::now(),
-            sip_rx_task,
         };
         self.sessions.lock().await.insert(call_id.clone(), session);
         info!(
-            "Reverse WebRTC session created for {}: sip_port={}",
-            call_id, sip_rtp_port
+            "Reverse WebRTC session created for {}: sip_audio_port={}, sip_video_port={:?}",
+            call_id, sip_audio_port, sip_video_port
         );
-        Ok((webrtc_offer_sdp, sip_rtp_port))
+        Ok((webrtc_offer_sdp, sip_audio_port, sip_video_port))
     }
 
     async fn prepare_session(
         &self,
         call_id: &str,
+        with_video: bool,
     ) -> Result<(
         Arc<RTCPeerConnection>,
-        Arc<Mutex<Option<SocketAddr>>>,
-        JoinHandle<()>,
+        SipMediaChannel,
+        Option<SipMediaChannel>,
         u16,
+        Option<u16>,
     )> {
-        // --- MediaEngine: PCMU + PCMA only (no transcoding needed) ---
+        // --- MediaEngine: audio + video passthrough codecs ---
         let mut m = MediaEngine::default();
         m.register_codec(
             RTCRtpCodecParameters {
@@ -188,6 +203,34 @@ impl WebRtcGateway {
                 ..Default::default()
             },
             RTPCodecType::Audio,
+        )?;
+        m.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_H264.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "profile-level-id=42e01f;packetization-mode=1".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: 96,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?;
+        m.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: 97,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
         )?;
         m.register_codec(
             RTCRtpCodecParameters {
@@ -220,7 +263,7 @@ impl WebRtcGateway {
         let pc = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
 
         // --- Local audio track (SIP phone → browser direction) ---
-        let local_track = Arc::new(TrackLocalStaticRTP::new(
+        let local_audio_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_PCMU.to_owned(),
                 clock_rate: 8000,
@@ -229,28 +272,74 @@ impl WebRtcGateway {
                 rtcp_feedback: vec![],
             },
             "audio".to_owned(),
-            format!("sip3gw-{}", &call_id[..call_id.len().min(8)]),
+            format!("sip3gw-a-{}", &call_id[..call_id.len().min(8)]),
         ));
         let rtp_sender = pc
-            .add_track(Arc::clone(&local_track) as Arc<dyn TrackLocal + Send + Sync>)
+            .add_track(Arc::clone(&local_audio_track) as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
 
         // Drain RTCP to prevent sender backpressure.
         tokio::spawn(async move { while rtp_sender.read_rtcp().await.is_ok() {} });
 
-        // --- SIP-side UDP socket (SIP phone sends RTP here) ---
-        let sip_socket = Arc::new(self.bind_sip_port().await?);
-        let sip_rtp_port = sip_socket.local_addr()?.port();
-        let sip_peer: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
+        let local_video_track = if with_video {
+            let track = Arc::new(TrackLocalStaticRTP::new(
+                RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_H264.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "profile-level-id=42e01f;packetization-mode=1".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                "video".to_owned(),
+                format!("sip3gw-v-{}", &call_id[..call_id.len().min(8)]),
+            ));
+            let sender = pc
+                .add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>)
+                .await?;
+            tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
+            Some(track)
+        } else {
+            None
+        };
+
+        let sip_audio = self
+            .build_media_channel(SdpMediaKind::Audio, local_audio_track)
+            .await?;
+        let sip_audio_port = sip_audio.socket.local_addr()?.port();
+        let sip_video = if let Some(video_track) = local_video_track {
+            Some(
+                self.build_media_channel(SdpMediaKind::Video, video_track)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let sip_video_port = match &sip_video {
+            Some(channel) => Some(channel.socket.local_addr()?.port()),
+            None => None,
+        };
 
         // --- on_track: browser → SIP phone (register before negotiation) ---
-        let sip_socket_rx = sip_socket.clone();
-        let sip_peer_rx = sip_peer.clone();
+        let audio_socket = sip_audio.socket.clone();
+        let audio_peer = sip_audio.sip_peer.clone();
+        let video_socket = sip_video.as_ref().map(|c| c.socket.clone());
+        let video_peer = sip_video.as_ref().map(|c| c.sip_peer.clone());
         pc.on_track(Box::new(move |track, _receiver, _transceiver| {
-            let socket = sip_socket_rx.clone();
-            let peer = sip_peer_rx.clone();
+            let audio_socket = audio_socket.clone();
+            let audio_peer = audio_peer.clone();
+            let video_socket = video_socket.clone();
+            let video_peer = video_peer.clone();
             Box::pin(async move {
                 let mut buf = vec![0u8; 4096];
+                let is_video = track.kind() == RTPCodecType::Video;
+                let (socket, peer) = if is_video {
+                    match (video_socket, video_peer) {
+                        (Some(socket), Some(peer)) => (socket, peer),
+                        _ => (audio_socket, audio_peer),
+                    }
+                } else {
+                    (audio_socket, audio_peer)
+                };
                 while let Ok((packet, _)) = track.read(&mut buf).await {
                     // Marshal the decoded RTP packet back to raw bytes.
                     if let Ok(raw) = packet.marshal()
@@ -263,47 +352,77 @@ impl WebRtcGateway {
             })
         }));
 
-        // --- Background task: SIP phone → browser via local_track ---
-        let sip_socket_tx = sip_socket;
-        let sip_peer_tx = sip_peer.clone();
-        let local_track_tx = local_track;
+        Ok((pc, sip_audio, sip_video, sip_audio_port, sip_video_port))
+    }
+
+    async fn build_media_channel(
+        &self,
+        kind: SdpMediaKind,
+        local_track: Arc<TrackLocalStaticRTP>,
+    ) -> Result<SipMediaChannel> {
+        let socket = Arc::new(self.bind_sip_port().await?);
+        let sip_peer: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
+        let socket_rx = socket.clone();
+        let sip_peer_rx = sip_peer.clone();
+        let label = match kind {
+            SdpMediaKind::Audio => "audio",
+            SdpMediaKind::Video => "video",
+        };
         let sip_rx_task = tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
             loop {
-                match sip_socket_tx.recv_from(&mut buf).await {
+                match socket_rx.recv_from(&mut buf).await {
                     Ok((n, src)) => {
-                        // Learn SIP peer address from received packets (symmetric RTP).
-                        // Update on change so stale SDP-derived addresses don't pin routing.
-                        let mut peer = sip_peer_tx.lock().await;
+                        let mut peer = sip_peer_rx.lock().await;
                         if peer.map(|p| p != src).unwrap_or(true) {
                             *peer = Some(src);
                         }
                         drop(peer);
-                        if let Err(e) = local_track_tx.write(&buf[..n]).await {
-                            debug!("WebRTC gw: local track write error: {}", e);
+                        if let Err(e) = local_track.write(&buf[..n]).await {
+                            debug!("WebRTC gw: {} track write error: {}", label, e);
                         }
                     }
                     Err(e) => {
-                        warn!("WebRTC gw: SIP socket recv error: {}", e);
+                        warn!("WebRTC gw: {} socket recv error: {}", label, e);
                         break;
                     }
                 }
             }
         });
-
-        Ok((pc, sip_peer, sip_rx_task, sip_rtp_port))
+        Ok(SipMediaChannel {
+            socket,
+            sip_peer,
+            sip_rx_task,
+        })
     }
 
-    /// Set the SIP phone's RTP address for the call (from 200 OK SDP).
-    pub async fn set_sip_peer(&self, call_id: &str, addr: SocketAddr) {
+    async fn set_sip_media_peer(&self, call_id: &str, kind: SdpMediaKind, addr: SocketAddr) {
         let sip_peer = {
             let sessions = self.sessions.lock().await;
-            sessions.get(call_id).map(|s| s.sip_peer.clone())
+            sessions.get(call_id).and_then(|s| match kind {
+                SdpMediaKind::Audio => Some(s.sip_audio.sip_peer.clone()),
+                SdpMediaKind::Video => s.sip_video.as_ref().map(|channel| channel.sip_peer.clone()),
+            })
         };
         if let Some(peer) = sip_peer {
             *peer.lock().await = Some(addr);
-            info!("WebRTC gw: SIP peer for {} set to {}", call_id, addr);
+            info!(
+                "WebRTC gw: SIP {:?} peer for {} set to {}",
+                kind, call_id, addr
+            );
         }
+    }
+
+    /// Set the SIP phone's audio RTP address for the call.
+    pub async fn set_sip_peer(&self, call_id: &str, addr: SocketAddr) {
+        self.set_sip_media_peer(call_id, SdpMediaKind::Audio, addr)
+            .await;
+    }
+
+    /// Set the SIP phone's video RTP address for the call.
+    pub async fn set_sip_video_peer(&self, call_id: &str, addr: SocketAddr) {
+        self.set_sip_media_peer(call_id, SdpMediaKind::Video, addr)
+            .await;
     }
 
     pub async fn is_sip_caller_session(&self, call_id: &str) -> bool {
@@ -340,7 +459,10 @@ impl WebRtcGateway {
     pub async fn remove_session(&self, call_id: &str) {
         let session = self.sessions.lock().await.remove(call_id);
         if let Some(s) = session {
-            s.sip_rx_task.abort();
+            s.sip_audio.sip_rx_task.abort();
+            if let Some(video) = s.sip_video {
+                video.sip_rx_task.abort();
+            }
             let _ = s.pc.close().await;
             debug!("WebRTC gw: removed session {}", call_id);
         }
@@ -361,7 +483,10 @@ impl WebRtcGateway {
                 .collect()
         };
         for (call_id, s) in stale {
-            s.sip_rx_task.abort();
+            s.sip_audio.sip_rx_task.abort();
+            if let Some(video) = s.sip_video {
+                video.sip_rx_task.abort();
+            }
             let _ = s.pc.close().await;
             warn!("WebRTC gw: cleaned up stale session {}", call_id);
         }

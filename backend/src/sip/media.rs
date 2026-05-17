@@ -575,24 +575,33 @@ pub fn is_webrtc_sdp(sdp: &str) -> bool {
     })
 }
 
-/// Build a minimal plain RTP SDP offer to send to a legacy SIP phone.
-/// The phone returns RTP to `server_ip:sip_rtp_port`.
-pub fn make_plain_rtp_sdp(server_ip: &str, sip_rtp_port: u16) -> String {
+/// Build a plain RTP SDP offer to send to a legacy SIP phone.
+/// The phone returns RTP to `server_ip` on the provided media ports.
+pub fn make_plain_rtp_sdp(server_ip: &str, audio_port: u16, video_port: Option<u16>) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format!(
+    let mut sdp = format!(
         "v=0\r\no=- {ts} {ts} IN IP4 {ip}\r\ns=-\r\nc=IN IP4 {ip}\r\nt=0 0\r\n\
-         m=audio {port} RTP/AVP 0 8\r\n\
-         a=rtpmap:0 PCMU/8000\r\n\
-         a=rtpmap:8 PCMA/8000\r\n\
-         a=sendrecv\r\n",
+          m=audio {port} RTP/AVP 0 8\r\n\
+          a=rtpmap:0 PCMU/8000\r\n\
+          a=rtpmap:8 PCMA/8000\r\n\
+          a=sendrecv\r\n",
         ts = ts,
         ip = server_ip,
-        port = sip_rtp_port,
-    )
+        port = audio_port,
+    );
+    if let Some(port) = video_port {
+        sdp.push_str(&format!(
+            "m=video {port} RTP/AVP 96 97\r\n\
+             a=rtpmap:96 H264/90000\r\n\
+             a=rtpmap:97 VP8/90000\r\n\
+             a=sendrecv\r\n",
+        ));
+    }
+    sdp
 }
 
 /// Extract the connection IP from the first session-level `c=IN IP4 <addr>` line.
@@ -619,6 +628,18 @@ pub fn sdp_audio_port(sdp: &str) -> Option<u16> {
         if line.starts_with("m=audio ") || line.starts_with("m=audio\t") {
             let port_str = line.split_whitespace().nth(1)?;
             let port_only = port_str.split('/').next()?; // strip /count
+            return port_only.parse().ok();
+        }
+    }
+    None
+}
+
+/// Extract the first video RTP port from a SDP body's `m=video <port>` line.
+pub fn sdp_video_port(sdp: &str) -> Option<u16> {
+    for line in sdp.lines() {
+        if line.starts_with("m=video ") || line.starts_with("m=video\t") {
+            let port_str = line.split_whitespace().nth(1)?;
+            let port_only = port_str.split('/').next()?;
             return port_only.parse().ok();
         }
     }

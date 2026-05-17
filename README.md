@@ -51,12 +51,12 @@ SIP3 is a full-featured SIP proxy/registrar server built with:
 
 #### Frontend
 - ✅ Vue 3 + Element Plus admin dashboard (全中文界面)
-- ✅ Browser softphone at `/phone` — SIP.js + WebRTC audio + browser-to-browser video, TURN auto-configured
+- ✅ Browser softphone at `/phone` — SIP.js + WebRTC audio/video, supports browser↔Linphone video interop, TURN auto-configured
 - ✅ Search, pagination, de-register, call statistics
 
 ### What's new in v1.5.0
 
-- ✅ Added `/phone` browser-to-browser video calling MVP with pre-call media selection and negotiated video fallback handling.
+- ✅ Added `/phone` video calling with pre-call media selection, browser↔Linphone video interop, and negotiated video fallback-to-audio handling.
 - ✅ Added dual CI publishing topology: **GitHub Actions -> GHCR** and **GitLab CI -> Harbor** for domestic build/publish paths.
 - ✅ Updated production deployment model to **Harbor-only pulls** with explicit source-path verification and rollback-by-tag flow.
 - ✅ Fixed admin sidebar footer to render version text from frontend package metadata instead of a hardcoded value.
@@ -242,7 +242,7 @@ npm run dev         # dev server on :5173
 - **No ringing / MESSAGE not delivered**: check `sip_registrations.source_ip/source_port` against the sender's real source socket.
 - **Call connected but no audio**: verify UDP RTP range (`10000-10099`) is open and relay ports in SDP match packet source ports.
 - **Linphone video does not appear**: verify both offer and answer SDP rewrite `m=video` to the SIP3 public IP and a relay port. A SIP audio+video call consumes four RTP relay ports, so the default range supports fewer concurrent video calls than audio-only calls. Browser WebRTC video is not covered by the legacy SIP RTP relay path.
-- **Browser video call has no picture**: confirm both users are calling from `/phone`, camera permission is granted on both browsers, and WSS/TURN are reachable. The current `/phone` MVP supports browser-to-browser video only, not browser-to-SIP-phone video interop.
+- **Browser↔Linphone video has no picture**: confirm Linphone video is enabled, camera permission is granted on the browser, and WSS/TURN are reachable. Also verify SIP 200 OK/INVITE SDP carries active `m=video` (not `m=video 0`) and that RTP relay ports are reachable.
 - **Conference has no audio / cannot join**: confirm the room is enabled, the phone offers RTP/AVP PCMU or PCMA, and UDP `10100-10199` is open.
 - **Voicemail does not answer / MWI not updated**: confirm the mailbox is enabled, the caller/subscriber source matches an active registration, UDP `10200-10299` is open, and prompt/storage directories are writable.
 - **MESSAGE persistence errors (1146)**: ensure migration `010_sip_messages.sql` has been applied.
@@ -291,7 +291,7 @@ SIP3 是一个功能完整的 SIP 代理/注册服务器，使用 Rust 构建后
 
 #### 前端
 - ✅ Vue 3 + Element Plus 全中文管理界面
-- ✅ `/phone` 浏览器软电话 — SIP.js + WebRTC，支持语音与浏览器到浏览器视频通话，并自动获取 TURN 凭证
+- ✅ `/phone` 浏览器软电话 — SIP.js + WebRTC，支持语音与浏览器↔Linphone 视频通话，并自动获取 TURN 凭证
 - ✅ 搜索、分页、强制注销、通话统计
 
 ### v1.3.0 更新亮点
@@ -396,7 +396,7 @@ npm run dev         # 开发服务器 :5173
 - **不响铃 / MESSAGE 收不到**：优先核对 `sip_registrations` 中 `source_ip/source_port` 是否与实时来包一致。
 - **接通无声音**：确认 UDP `10000-10099` 已放行，并核对 SDP 中继端口与实际 RTP 源端口一致。
 - **Linphone 视频无画面**：确认 INVITE 和 200 OK 的 SDP 都把 `m=video` 改写到 SIP3 公网 IP 和中继端口。SIP 音视频通话每路会占用 4 个 RTP 中继端口，因此默认端口范围支持的并发视频通话少于纯音频通话。浏览器 WebRTC 视频不属于传统 SIP RTP 中继路径。
-- **浏览器视频通话无画面**：确认双方都从 `/phone` 发起/接听通话、浏览器已授予摄像头权限，并且 WSS/TURN 可达。当前 `/phone` 第一版仅支持浏览器到浏览器视频，不支持浏览器与传统 SIP 终端的视频互通。
+- **浏览器↔Linphone 视频无画面**：确认 Linphone 已启用视频、浏览器已授予摄像头权限，并且 WSS/TURN 可达；同时检查 SIP INVITE/200 OK 的 SDP 中 `m=video` 为活动状态（不是 `m=video 0`），且中继 RTP 端口可达。
 - **会议无声音 / 无法入会**：确认会议室已启用、终端提供 RTP/AVP PCMU 或 PCMA，并放行 UDP `10100-10199`。
 - **语音信箱不接听 / MWI 不更新**：确认信箱已启用、呼叫/订阅来源与有效注册源一致，UDP `10200-10299` 已放行，提示音和存储目录可读写。
 - **MESSAGE 入库报 1146**：确认已执行迁移 `010_sip_messages.sql`。

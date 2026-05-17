@@ -213,7 +213,7 @@ When an INVITE is proxied, the server:
    (symmetric RTP – no SDP address trust required).
 5. Bidirectionally forwards RTP/SRTP bytes between the two peers without transcoding.
 
-This means clients behind NAT with no fixed public IP can call each other normally. A pure audio call consumes two relay ports; an audio+video SIP phone call consumes four. Keep Docker port ranges modest for startup performance, but size `rtp_port_min`–`rtp_port_max` for the expected concurrent video calls. Browser WebRTC video is separate from this legacy SIP RTP relay path.
+This means clients behind NAT with no fixed public IP can call each other normally. A pure audio call consumes two relay ports; an audio+video SIP phone call consumes four. Keep Docker port ranges modest for startup performance, but size `rtp_port_min`–`rtp_port_max` for the expected concurrent video calls. Browser video interop with SIP phones is handled by the WebRTC gateway path (not by the legacy SIP-only relay rewrite path).
 
 ## Conference Rooms
 
@@ -366,7 +366,7 @@ Do not run destructive git commands in production unless local configuration has
 - Verify UDP ports 10000–10099 are open and forwarded to the server
 - Confirm the INVITE offer and 200 OK answer both rewrite `m=video` to `server.public_ip` and a SIP3 relay port
 - Remember that one audio+video SIP call uses four RTP relay ports, so port exhaustion appears sooner than with audio-only calls
-- Browser WebRTC video is not handled by the legacy SIP RTP relay; it needs separate WebRTC gateway support
+- Browser↔SIP phone video uses the WebRTC gateway path; verify `m=video` stays active in SDP and that both RTP relay and WebRTC transport ports are reachable
 
 ### Database connection fails
 - Check `DATABASE_URL` is correct
