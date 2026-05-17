@@ -39,16 +39,41 @@ Services started:
 - REST API on port 3000
 - Admin UI on port 8030
 
-## Production Deployment (GHCR -> Harbor Sync)
+## Production Deployment (Harbor deploy paths)
+
+### CI topology
+
+- GitHub Actions -> GHCR (`ghcr.io/wendal/sip3/backend`, `ghcr.io/wendal/sip3/frontend`)
+- GitLab CI -> Harbor (`harbor.air32.cn/sip3/backend`, `harbor.air32.cn/sip3/frontend`)
 
 GitHub Actions publishes backend and frontend images to:
 
 - `ghcr.io/wendal/sip3/backend`
 - `ghcr.io/wendal/sip3/frontend`
 
-The Harbor host is responsible for copying a chosen tag into Harbor. Production still pulls only from Harbor.
+Production still pulls only from Harbor, but there are two mutually exclusive ways a Harbor tag can arrive:
 
-After the first CI publish, make the GHCR backend/frontend packages public (or otherwise grant read access) before running Harbor-host sync. `scripts/sync-from-ghcr.sh` reads from GHCR without authentication in this flow, and newly created GHCR packages are private by default.
+1. **Path A (direct):** GitLab CI publishes the tag directly to Harbor.
+2. **Path B (sync):** GitHub Actions publishes to GHCR, then operators copy that tag into Harbor via `scripts/sync-from-ghcr.sh`.
+
+**Rule:** For any given deploy tag, use exactly one path. **Do NOT run `scripts/sync-from-ghcr.sh` for tags already produced by GitLab CI.**
+
+After the first GitHub Actions publish, make the GHCR backend/frontend packages public (or otherwise grant read access) before running Harbor-host sync. `scripts/sync-from-ghcr.sh` reads from GHCR without authentication in this flow, and newly created GHCR packages are private by default.
+
+### push_both_manual
+
+When triggering both CI pipelines manually, push the same commit to both remotes:
+
+```bash
+git push origin main
+git push gitlab main
+```
+
+GitLab remote URL:
+
+```bash
+ssh://git@sh.air32.cn:222/wendal/sip3.git
+```
 
 ### 1. Prepare `.env`
 
@@ -70,7 +95,8 @@ SIP3__SERVER__PUBLIC_IP=...
 SIP3__TURN__SECRET=...
 ```
 
-`IMAGE_TAG` must match the exact tag that you copy from GHCR into Harbor.
+`IMAGE_TAG` must match the selected source path tag (GitLab CI direct to Harbor OR GHCR-to-Harbor sync).
+Use `HARBOR_IMAGE_PREFIX=harbor.air32.cn/sip3` and `IMAGE_TAG=git-<shortsha>` for production deploys.
 
 ### 2. Log in to Harbor on the Harbor sync host
 
@@ -82,20 +108,53 @@ docker login harbor.air32.cn
 
 Use a Harbor robot account with push/pull access before running `scripts/sync-from-ghcr.sh`. Those same Harbor credentials are also used later by production `docker compose pull` on this host.
 
-### 3. Sync the selected tag into Harbor
+### 3. Choose exactly one Harbor image source path
+
+#### Path A - Tag produced directly by GitLab CI (no sync)
+
+If the target `git-<shortsha>` tag was already pushed to Harbor by GitLab CI, skip sync entirely.
+
+#### Path B - Tag synced from GHCR into Harbor
+
+If the target `git-<shortsha>` tag exists only in GHCR, copy it into Harbor:
 
 ```bash
 bash scripts/sync-from-ghcr.sh git-<shortsha>
 ```
 
-### 4. Verify the tag exists in Harbor
+### 4. Pre-deploy verification (required)
+
+Verify source provenance before deployment. Deployment is allowed only if the selected path passes:
+
+#### Path A (GitLab CI direct) - Harbor-only checks
 
 ```bash
-skopeo inspect docker://harbor.air32.cn/sip3/backend:git-<shortsha>
-skopeo inspect docker://harbor.air32.cn/sip3/frontend:git-<shortsha>
+H_BACKEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://harbor.air32.cn/sip3/backend:git-<shortsha>)
+H_FRONTEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://harbor.air32.cn/sip3/frontend:git-<shortsha>)
+echo "backend=${H_BACKEND_DIGEST}"
+echo "frontend=${H_FRONTEND_DIGEST}"
 ```
 
+Pass criteria (Path A): both Harbor image digests resolve successfully (non-empty) for the same `IMAGE_TAG` before deploy.
+
+#### Path B (GHCR sync) - digest equality checks
+
+```bash
+G_BACKEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/wendal/sip3/backend:git-<shortsha>)
+G_FRONTEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/wendal/sip3/frontend:git-<shortsha>)
+H_BACKEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://harbor.air32.cn/sip3/backend:git-<shortsha>)
+H_FRONTEND_DIGEST=$(skopeo inspect --format '{{.Digest}}' docker://harbor.air32.cn/sip3/frontend:git-<shortsha>)
+test "$G_BACKEND_DIGEST" = "$H_BACKEND_DIGEST"
+test "$G_FRONTEND_DIGEST" = "$H_FRONTEND_DIGEST"
+echo "backend=${G_BACKEND_DIGEST} == ${H_BACKEND_DIGEST}"
+echo "frontend=${G_FRONTEND_DIGEST} == ${H_FRONTEND_DIGEST}"
+```
+
+Pass criteria (Path B): GHCR and Harbor digests are equal for both backend and frontend images at the selected `IMAGE_TAG`.
+
 ### 5. Deploy from Harbor only
+
+In production, production does not source-build and is Harbor only.
 
 ```bash
 if grep -q '^IMAGE_TAG=' .env; then
@@ -250,7 +309,7 @@ TCP 3306         - MySQL (internal only)
 
 ## Release and Production Update
 
-The canonical procedure is the **Production Deployment (GHCR -> Harbor Sync)** section above. On the current production layout, run those steps from `root@sip.air32.cn:/opt/sip3`, keep the same `git-<shortsha>` tag across sync and deploy, and use that section for the Harbor login, `skopeo inspect`, deploy, rollback, and health-check commands.
+The canonical procedure is the **Production Deployment (Harbor deploy paths)** section above. On the current production layout, run those steps from `root@sip.air32.cn:/opt/sip3`, keep the same `git-<shortsha>` tag across verification and deploy, and use that section for Harbor login, source-path selection, `skopeo inspect`, deploy, rollback, and health-check commands.
 
 For `v1.3.0`, verify that Docker publishes all four media ranges:
 
