@@ -36,6 +36,9 @@ docker_publish:
   image: docker:27
   services:
     - docker:27-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   needs:
     - backend_test
     - frontend_build
