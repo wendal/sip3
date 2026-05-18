@@ -52,6 +52,21 @@ The current GitLab CI path runs on a self-hosted **Linux shell runner**, so the 
 - Node.js 20 + npm
 - Docker CLI plus daemon access for `gitlab-runner` (for Harbor image build/push)
 
+### GitLab CI operational checklist
+
+For the current self-hosted GitLab path, the following must all be true before `docker_publish` can work reliably:
+
+1. The `linux` tag resolves to the shell runner on `gz01.air32.cn`, not to a container-only runner with incompatible assumptions.
+2. The `gitlab-runner` user can run `docker version` successfully (for example via membership in the host `docker` group).
+3. GitLab project/group CI variables `HARBOR_USER` and `HARBOR_PASSWORD` are set, or the publish job will fail almost immediately during Harbor login.
+4. `docker/Dockerfile.backend` remains compatible with the host builder baseline. `docker buildx` / BuildKit may be installed later as a performance optimization, but the CI path should not depend on BuildKit-only syntax just to stay functional.
+
+### GitLab CI lessons learned
+
+- A very fast `docker_publish` failure usually points to missing Harbor credentials or missing Docker access for `gitlab-runner`, not to Rust or frontend build problems.
+- A slow `docker_publish` job on this runner usually means base-image pull/build time on the host, not that the job is stuck.
+- `image:` and `services:` entries in `.gitlab-ci.yml` are not what makes this GitLab path work today; correctness depends on the shell-runner host environment and the repo staying compatible with it.
+
 GitHub Actions publishes backend and frontend images to:
 
 - `ghcr.io/wendal/sip3/backend`
@@ -113,6 +128,8 @@ docker login harbor.air32.cn
 ```
 
 Use a Harbor robot account with push/pull access before running `scripts/sync-from-ghcr.sh`. Those same Harbor credentials are also used later by production `docker compose pull` on this host.
+
+For the GitLab CI direct-publish path, configure the same Harbor robot credentials in GitLab CI/CD variables as `HARBOR_USER` and `HARBOR_PASSWORD`.
 
 ### 3. Choose exactly one Harbor image source path
 
