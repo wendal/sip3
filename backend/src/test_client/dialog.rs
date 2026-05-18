@@ -106,4 +106,30 @@ mod tests {
             .expect_err("ack sent before 200 must remain invalid");
         assert!(err.to_string().contains("ACK"));
     }
+
+    #[test]
+    fn answered_flow_becomes_established_after_ack() {
+        let mut trace = DialogTrace::new("call-44");
+        trace.on_invite_sent();
+        trace.on_ringing();
+        trace.on_answered();
+        trace.on_ack_sent();
+
+        assert_eq!(trace.state, DialogState::Established);
+        trace
+            .require_established()
+            .expect("200 followed by ACK should establish the dialog");
+    }
+
+    #[test]
+    fn bye_moves_dialog_to_terminated() {
+        let mut trace = DialogTrace::new("call-45");
+        trace.on_invite_sent();
+        trace.on_answered();
+        trace.on_ack_sent();
+
+        trace.on_bye();
+
+        assert_eq!(trace.state, DialogState::Terminated);
+    }
 }

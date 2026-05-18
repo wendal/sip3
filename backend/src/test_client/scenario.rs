@@ -60,9 +60,90 @@ pub async fn run_scenario(cfg: &TesterConfig) -> Result<ScenarioOutcome> {
 mod tests {
     use super::*;
 
+    fn test_endpoint(label: &str, username: &str) -> SipEndpointConfig {
+        SipEndpointConfig {
+            label: label.to_string(),
+            host: "127.0.0.1".to_string(),
+            tls_port: 5061,
+            domain: "sip.air32.cn".to_string(),
+            realm: "sip.air32.cn".to_string(),
+            username: username.to_string(),
+            password: "secret".to_string(),
+            insecure_tls: true,
+        }
+    }
+
+    fn test_config(scenario: ScenarioName) -> TesterConfig {
+        TesterConfig {
+            target_host: "127.0.0.1".to_string(),
+            tls_port: 5061,
+            domain: "sip.air32.cn".to_string(),
+            realm: "sip.air32.cn".to_string(),
+            caller: test_endpoint("caller", "1001"),
+            callee: test_endpoint("callee", "1002"),
+            rtp_threshold: 1,
+            scenario,
+        }
+    }
+
     #[test]
     fn scenario_name_rejects_unknown_values() {
         let err = ScenarioName::parse("not-real").expect_err("unknown scenario");
         assert!(err.to_string().contains("unknown scenario"));
+    }
+
+    #[test]
+    fn scenario_name_parses_all_supported_tls_names() {
+        assert_eq!(
+            ScenarioName::parse("tls_register_dual").expect("parse register scenario"),
+            ScenarioName::TlsRegisterDual
+        );
+        assert_eq!(
+            ScenarioName::parse("tls_message_dual").expect("parse message scenario"),
+            ScenarioName::TlsMessageDual
+        );
+        assert_eq!(
+            ScenarioName::parse("tls_basic_call").expect("parse basic call scenario"),
+            ScenarioName::TlsBasicCall
+        );
+    }
+
+    #[tokio::test]
+    async fn run_scenario_returns_expected_outcome_for_tls_register_dual() {
+        let outcome = run_scenario(&test_config(ScenarioName::TlsRegisterDual))
+            .await
+            .expect("run register scenario");
+
+        assert_eq!(outcome.name, "tls_register_dual");
+        assert_eq!(
+            outcome.detail,
+            "scenario router selected the dual-register path"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_scenario_returns_expected_outcome_for_tls_message_dual() {
+        let outcome = run_scenario(&test_config(ScenarioName::TlsMessageDual))
+            .await
+            .expect("run message scenario");
+
+        assert_eq!(outcome.name, "tls_message_dual");
+        assert_eq!(
+            outcome.detail,
+            "scenario router selected the dual-message path"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_scenario_returns_expected_outcome_for_tls_basic_call() {
+        let outcome = run_scenario(&test_config(ScenarioName::TlsBasicCall))
+            .await
+            .expect("run basic call scenario");
+
+        assert_eq!(outcome.name, "tls_basic_call");
+        assert_eq!(
+            outcome.detail,
+            "scenario router selected the basic call path"
+        );
     }
 }
