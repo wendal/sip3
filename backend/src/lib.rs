@@ -5,4 +5,5 @@ pub mod db;
 pub mod models;
 pub mod security_guard;
 pub mod sip;
+pub mod test_client;
 pub mod storage;
