@@ -237,6 +237,26 @@ npm install
 npm run dev         # dev server on :5173
 ```
 
+### Headless SIP regression tester
+
+Run the fixed TLS regression scenarios against a reachable SIP3 deployment:
+
+```powershell
+cd backend
+cargo run --bin headless_call_tester -- `
+  --target sip.air32.cn `
+  --tls-port 5061 `
+  --domain sip.air32.cn `
+  --realm sip.air32.cn `
+  --scenario tls_basic_call `
+  --caller 1001 `
+  --caller-password <password> `
+  --callee 1003 `
+  --callee-password <password> `
+  --rtp-threshold 8 `
+  --insecure-tls
+```
+
 ### Troubleshooting
 
 - **No ringing / MESSAGE not delivered**: check `sip_registrations.source_ip/source_port` against the sender's real source socket.

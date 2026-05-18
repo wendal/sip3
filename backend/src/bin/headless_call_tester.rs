@@ -1,4 +1,99 @@
-fn main() {}
+use anyhow::Result;
+use sip3_backend::test_client::assertions::ScenarioStatus;
+use sip3_backend::test_client::endpoint::SipEndpointConfig;
+use sip3_backend::test_client::scenario::{ScenarioName, TesterConfig, run_scenario};
+
+#[derive(Debug, Clone)]
+struct CliArgs {
+    target: String,
+    tls_port: u16,
+    domain: String,
+    realm: String,
+    scenario: ScenarioName,
+    caller: String,
+    caller_password: String,
+    callee: String,
+    callee_password: String,
+    rtp_threshold: usize,
+    insecure_tls: bool,
+}
+
+impl CliArgs {
+    fn parse(args: &[String]) -> Result<Self> {
+        fn value(args: &[String], key: &str) -> Result<String> {
+            let idx = args
+                .iter()
+                .position(|arg| arg == key)
+                .ok_or_else(|| anyhow::anyhow!("missing argument: {key}"))?;
+            args.get(idx + 1)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing value for {key}"))
+        }
+
+        Ok(Self {
+            target: value(args, "--target")?,
+            tls_port: value(args, "--tls-port")?.parse()?,
+            domain: value(args, "--domain")?,
+            realm: value(args, "--realm")?,
+            scenario: ScenarioName::parse(&value(args, "--scenario")?)?,
+            caller: value(args, "--caller")?,
+            caller_password: value(args, "--caller-password")?,
+            callee: value(args, "--callee")?,
+            callee_password: value(args, "--callee-password")?,
+            rtp_threshold: value(args, "--rtp-threshold")
+                .unwrap_or_else(|_| "8".to_string())
+                .parse()?,
+            insecure_tls: args.iter().any(|arg| arg == "--insecure-tls"),
+        })
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let cli = CliArgs::parse(&args)?;
+
+    let caller = SipEndpointConfig {
+        label: "caller".into(),
+        host: cli.target.clone(),
+        tls_port: cli.tls_port,
+        domain: cli.domain.clone(),
+        realm: cli.realm.clone(),
+        username: cli.caller.clone(),
+        password: cli.caller_password.clone(),
+        insecure_tls: cli.insecure_tls,
+    };
+    let callee = SipEndpointConfig {
+        label: "callee".into(),
+        host: cli.target.clone(),
+        tls_port: cli.tls_port,
+        domain: cli.domain.clone(),
+        realm: cli.realm.clone(),
+        username: cli.callee.clone(),
+        password: cli.callee_password.clone(),
+        insecure_tls: cli.insecure_tls,
+    };
+
+    let cfg = TesterConfig {
+        target_host: cli.target,
+        tls_port: cli.tls_port,
+        domain: cli.domain,
+        realm: cli.realm,
+        caller,
+        callee,
+        rtp_threshold: cli.rtp_threshold,
+        scenario: cli.scenario,
+    };
+
+    let outcome = run_scenario(&cfg).await?;
+    println!("{}", outcome.render());
+
+    if matches!(outcome.status, ScenarioStatus::Failed) {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

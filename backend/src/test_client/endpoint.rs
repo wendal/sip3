@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader, WriteHalf};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_native_tls::TlsStream;
@@ -153,6 +153,81 @@ impl SipEndpoint {
             writer,
             events: rx,
         })
+    }
+
+    pub async fn register(&mut self) -> anyhow::Result<()> {
+        let call_id = format!("register-{}", self.cfg.username);
+        let raw = format!(
+            "REGISTER sip:{domain} SIP/2.0\r\n\
+             Via: SIP/2.0/TLS tester.invalid;branch=z9hG4bK-{call_id};rport\r\n\
+             From: <sip:{username}@{domain}>;tag=register\r\n\
+             To: <sip:{username}@{domain}>\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Contact: <sip:{username}@{domain};transport=tls>\r\n\
+             Expires: 300\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+            domain = self.cfg.domain,
+            username = self.cfg.username,
+        );
+        self.send_raw(&raw).await?;
+        self.expect_event(
+            "REGISTER",
+            std::time::Duration::from_secs(5),
+            |event| match event {
+                SipEvent::Registered => true,
+                SipEvent::Ok { cseq_method } => cseq_method == "REGISTER",
+                _ => false,
+            },
+        )
+        .await
+    }
+
+    pub async fn send_message(&mut self, to_username: &str, body: &str) -> anyhow::Result<()> {
+        let raw = build_message_request(
+            &self.cfg,
+            to_username,
+            body,
+            &format!("message-{}-{}", self.cfg.username, to_username),
+            1,
+        );
+        self.send_raw(&raw).await?;
+        self.expect_event(
+            "MESSAGE",
+            std::time::Duration::from_secs(5),
+            |event| match event {
+                SipEvent::Ok { cseq_method } => cseq_method == "MESSAGE",
+                _ => false,
+            },
+        )
+        .await
+    }
+
+    async fn send_raw(&mut self, raw: &str) -> anyhow::Result<()> {
+        self.writer.write_all(raw.as_bytes()).await?;
+        Ok(())
+    }
+
+    async fn expect_event<F>(
+        &mut self,
+        label: &str,
+        timeout: std::time::Duration,
+        predicate: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn(&SipEvent) -> bool,
+    {
+        let event = tokio::time::timeout(timeout, self.events.recv())
+            .await
+            .map_err(|_| anyhow::anyhow!("{label} timed out"))?
+            .ok_or_else(|| anyhow::anyhow!("{label} channel closed"))?;
+
+        if predicate(&event) {
+            Ok(())
+        } else {
+            anyhow::bail!("{label} received unexpected event: {:?}", event);
+        }
     }
 }
 

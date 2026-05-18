@@ -201,6 +201,10 @@ cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
+### Headless SIP smoke probe
+
+Use `cargo run --bin headless_call_tester` for non-destructive TLS smoke checks. The probe validates signaling and bidirectional RTP reachability; it is not a load generator.
+
 ## RTP Media Relay
 
 SIP3 includes a built-in server-side RTP relay so clients **do not need STUN or TURN**.
