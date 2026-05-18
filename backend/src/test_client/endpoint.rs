@@ -154,37 +154,65 @@ impl SipEndpoint {
 }
 
 fn parse_event(raw: &str) -> Option<SipEvent> {
-    if raw.starts_with("SIP/2.0 200") && raw.contains(" REGISTER") {
-        return Some(SipEvent::Registered);
+    let call_id = header_value_case_insensitive(raw, "Call-ID").unwrap_or_default();
+    let from = header_value_case_insensitive(raw, "From").unwrap_or_default();
+    let cseq = header_value_case_insensitive(raw, "CSeq").unwrap_or_default();
+    let cseq_method = cseq.split_whitespace().last().unwrap_or("").to_string();
+    let body = raw
+        .split_once("\r\n\r\n")
+        .map(|(_, rest)| rest.to_string())
+        .unwrap_or_default();
+
+    if raw.starts_with("SIP/2.0 200") {
+        if cseq_method == "REGISTER" {
+            return Some(SipEvent::Registered);
+        }
+        if cseq_method == "INVITE" {
+            return Some(SipEvent::Answered { call_id, sdp: body });
+        }
+        if !cseq_method.is_empty() {
+            return Some(SipEvent::Ok { cseq_method });
+        }
     }
-    if raw.starts_with("SIP/2.0 180") && raw.contains(" INVITE") {
-        return raw
-            .lines()
-            .find(|line| line.starts_with("Call-ID:"))
-            .map(|line| SipEvent::Ringing {
-                call_id: line.trim_start_matches("Call-ID:").trim().to_string(),
-            });
+
+    if raw.starts_with("SIP/2.0 180") && cseq_method == "INVITE" {
+        return Some(SipEvent::Ringing { call_id });
     }
-    if raw.starts_with("SIP/2.0 200") && raw.contains(" INVITE") {
-        return raw
-            .lines()
-            .find(|line| line.starts_with("Call-ID:"))
-            .map(|line| SipEvent::Answered {
-                call_id: line.trim_start_matches("Call-ID:").trim().to_string(),
-                sdp: raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string(),
-            });
-    }
-    if raw.starts_with("MESSAGE ") {
-        return Some(SipEvent::MessageReceived {
-            from: raw
-                .lines()
-                .find(|line| line.starts_with("From:"))
-                .unwrap_or("From:")
-                .to_string(),
-            body: raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string(),
+
+    if raw.starts_with("INVITE ") {
+        return Some(SipEvent::InviteReceived {
+            call_id,
+            from,
+            sdp: body,
         });
     }
+
+    if raw.starts_with("ACK ") {
+        return Some(SipEvent::AckReceived { call_id });
+    }
+
+    if raw.starts_with("BYE ") {
+        return Some(SipEvent::ByeReceived { call_id });
+    }
+
+    if raw.starts_with("CANCEL ") {
+        return Some(SipEvent::CancelReceived { call_id });
+    }
+
+    if raw.starts_with("MESSAGE ") {
+        return Some(SipEvent::MessageReceived { from, body });
+    }
+
     None
+}
+
+fn header_value_case_insensitive(raw: &str, name: &str) -> Option<String> {
+    raw.lines().find_map(|line| {
+        let (header_name, value) = line.split_once(':')?;
+        header_name
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_string())
+    })
 }
 
 #[cfg(test)]
@@ -229,5 +257,77 @@ mod tests {
         assert!(raw.starts_with("MESSAGE sip:1003@sip.air32.cn SIP/2.0\r\n"));
         assert!(raw.contains("Contact: <sip:1001@sip.air32.cn;transport=tls>\r\n"));
         assert!(raw.contains("Content-Length: 5\r\n\r\nhello"));
+    }
+
+    #[test]
+    fn parse_event_200_register_becomes_registered() {
+        assert!(matches!(
+            parse_event(
+                "SIP/2.0 200 OK\r\nCSeq: 1 REGISTER\r\nCall-ID: reg-1\r\nContent-Length: 0\r\n\r\n"
+            ),
+            Some(SipEvent::Registered)
+        ));
+    }
+
+    #[test]
+    fn parse_event_200_message_becomes_ok() {
+        match parse_event(
+            "SIP/2.0 200 OK\r\nCSeq: 7 MESSAGE\r\nCall-ID: msg-1\r\nContent-Length: 0\r\n\r\n",
+        ) {
+            Some(SipEvent::Ok { cseq_method }) => assert_eq!(cseq_method, "MESSAGE"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_invite_request_becomes_invite_received() {
+        match parse_event(
+            "INVITE sip:1001@sip.air32.cn SIP/2.0\r\nCall-ID: inv-1\r\nFrom: <sip:1002@sip.air32.cn>;tag=x\r\nContent-Type: application/sdp\r\nContent-Length: 7\r\n\r\nv=0\r\n\r\n",
+        ) {
+            Some(SipEvent::InviteReceived { call_id, from, sdp }) => {
+                assert_eq!(call_id, "inv-1");
+                assert_eq!(from, "<sip:1002@sip.air32.cn>;tag=x");
+                assert_eq!(sdp, "v=0\r\n\r\n");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_ack_request_becomes_ack_received() {
+        match parse_event("ACK sip:1001@sip.air32.cn SIP/2.0\r\nCall-ID: ack-1\r\n\r\n") {
+            Some(SipEvent::AckReceived { call_id }) => assert_eq!(call_id, "ack-1"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_bye_request_becomes_bye_received() {
+        match parse_event("BYE sip:1001@sip.air32.cn SIP/2.0\r\nCall-ID: bye-1\r\n\r\n") {
+            Some(SipEvent::ByeReceived { call_id }) => assert_eq!(call_id, "bye-1"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_cancel_request_becomes_cancel_received() {
+        match parse_event("CANCEL sip:1001@sip.air32.cn SIP/2.0\r\nCall-ID: cancel-1\r\n\r\n") {
+            Some(SipEvent::CancelReceived { call_id }) => assert_eq!(call_id, "cancel-1"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_handles_lowercase_header_names_case_insensitively() {
+        match parse_event(
+            "INVITE sip:1001@sip.air32.cn SIP/2.0\r\ncall-id: lc-1\r\nfrom: <sip:1002@sip.air32.cn>;tag=x\r\ncseq: 1 INVITE\r\nContent-Length: 7\r\n\r\nv=0\r\n\r\n",
+        ) {
+            Some(SipEvent::InviteReceived { call_id, from, sdp }) => {
+                assert_eq!(call_id, "lc-1");
+                assert_eq!(from, "<sip:1002@sip.air32.cn>;tag=x");
+                assert_eq!(sdp, "v=0\r\n\r\n");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }
