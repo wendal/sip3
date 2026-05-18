@@ -93,10 +93,26 @@ mod tests {
 
         assert!(caller.rx_count() >= 4, "caller should receive RTP back");
         assert!(callee.rx_count() >= 4, "callee should receive RTP back");
-        assert!(caller.meets_threshold(4));
-        assert!(callee.meets_threshold(4));
+        let caller_rx = caller.rx_count();
+        let callee_rx = callee.rx_count();
+        assert!(caller.meets_threshold(caller_rx));
+        assert!(!caller.meets_threshold(caller_rx + 1));
+        assert!(callee.meets_threshold(callee_rx));
+        assert!(!callee.meets_threshold(callee_rx + 1));
 
         caller_task.abort();
         callee_task.abort();
+    }
+
+    #[tokio::test]
+    async fn send_packets_without_peer_returns_error() {
+        let probe = RtpProbe::bind("127.0.0.1:0").await.expect("bind probe");
+
+        let err = probe
+            .send_packets(1, Duration::from_millis(5))
+            .await
+            .expect_err("send without peer should fail");
+
+        assert!(err.to_string().contains("RTP peer not set"));
     }
 }
