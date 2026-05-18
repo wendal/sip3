@@ -4,6 +4,8 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_native_tls::TlsStream;
 
+use crate::sip::handler::{md5_hex, parse_auth_params};
+
 #[derive(Debug, Clone)]
 pub struct SipEndpointConfig {
     pub label: String,
@@ -90,6 +92,10 @@ pub fn build_message_request(
 #[derive(Debug, Clone)]
 pub enum SipEvent {
     Registered,
+    AuthChallenge {
+        cseq_method: String,
+        auth_params: std::collections::HashMap<String, String>,
+    },
     MessageReceived {
         from: String,
         body: String,
@@ -157,31 +163,53 @@ impl SipEndpoint {
 
     pub async fn register(&mut self) -> anyhow::Result<()> {
         let call_id = format!("register-{}", self.cfg.username);
-        let raw = format!(
-            "REGISTER sip:{domain} SIP/2.0\r\n\
-             Via: SIP/2.0/TLS tester.invalid;branch=z9hG4bK-{call_id};rport\r\n\
-             From: <sip:{username}@{domain}>;tag=register\r\n\
-             To: <sip:{username}@{domain}>\r\n\
-             Call-ID: {call_id}\r\n\
-             CSeq: 1 REGISTER\r\n\
-             Contact: <sip:{username}@{domain};transport=tls>\r\n\
-             Expires: 300\r\n\
-             Content-Length: 0\r\n\
-             \r\n",
-            domain = self.cfg.domain,
-            username = self.cfg.username,
-        );
+        let raw = build_register_request(&self.cfg, &call_id, 1, None);
         self.send_raw(&raw).await?;
-        self.expect_event(
-            "REGISTER",
-            std::time::Duration::from_secs(5),
-            |event| match event {
-                SipEvent::Registered => true,
-                SipEvent::Ok { cseq_method } => cseq_method == "REGISTER",
-                _ => false,
-            },
-        )
-        .await
+        let event = self
+            .expect_event(
+                "REGISTER",
+                std::time::Duration::from_secs(5),
+                |event| match event {
+                    SipEvent::Registered => true,
+                    SipEvent::Ok { cseq_method } => cseq_method == "REGISTER",
+                    SipEvent::AuthChallenge { cseq_method, .. } => cseq_method == "REGISTER",
+                    _ => false,
+                },
+            )
+            .await?;
+
+        if let SipEvent::AuthChallenge { auth_params, .. } = event {
+            let nonce = auth_params
+                .get("nonce")
+                .ok_or_else(|| anyhow::anyhow!("REGISTER challenge missing nonce"))?;
+            let realm = auth_params
+                .get("realm")
+                .map(String::as_str)
+                .unwrap_or(self.cfg.realm.as_str());
+            let cnonce = format!("{:08x}", rand::random::<u32>());
+            let authorization =
+                build_register_authorization(&self.cfg, nonce, realm, "00000001", &cnonce);
+            self.send_raw(&build_register_request(
+                &self.cfg,
+                &call_id,
+                2,
+                Some(&authorization),
+            ))
+            .await?;
+            let _ = self
+                .expect_event(
+                    "REGISTER",
+                    std::time::Duration::from_secs(5),
+                    |event| match event {
+                        SipEvent::Registered => true,
+                        SipEvent::Ok { cseq_method } => cseq_method == "REGISTER",
+                        _ => false,
+                    },
+                )
+                .await?;
+        }
+
+        Ok(())
     }
 
     pub async fn send_message(&mut self, to_username: &str, body: &str) -> anyhow::Result<()> {
@@ -193,15 +221,17 @@ impl SipEndpoint {
             1,
         );
         self.send_raw(&raw).await?;
-        self.expect_event(
-            "MESSAGE",
-            std::time::Duration::from_secs(5),
-            |event| match event {
-                SipEvent::Ok { cseq_method } => cseq_method == "MESSAGE",
-                _ => false,
-            },
-        )
-        .await
+        let _ = self
+            .expect_event(
+                "MESSAGE",
+                std::time::Duration::from_secs(5),
+                |event| match event {
+                    SipEvent::Ok { cseq_method } => cseq_method == "MESSAGE",
+                    _ => false,
+                },
+            )
+            .await?;
+        Ok(())
     }
 
     async fn send_raw(&mut self, raw: &str) -> anyhow::Result<()> {
@@ -214,19 +244,79 @@ impl SipEndpoint {
         label: &str,
         timeout: std::time::Duration,
         predicate: F,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<SipEvent>
     where
         F: Fn(&SipEvent) -> bool,
     {
-        let event = tokio::time::timeout(timeout, self.events.recv())
+        recv_matching_event(&mut self.events, label, timeout, predicate).await
+    }
+}
+
+fn build_register_request(
+    cfg: &SipEndpointConfig,
+    call_id: &str,
+    cseq: u32,
+    authorization: Option<&str>,
+) -> String {
+    let authorization = authorization
+        .map(|value| format!("Authorization: {value}\r\n"))
+        .unwrap_or_default();
+
+    format!(
+        "REGISTER sip:{domain} SIP/2.0\r\n\
+         Via: SIP/2.0/TLS tester.invalid;branch=z9hG4bK-{call_id};rport\r\n\
+         From: <sip:{username}@{domain}>;tag=register\r\n\
+         To: <sip:{username}@{domain}>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: {cseq} REGISTER\r\n\
+         Contact: <sip:{username}@{domain};transport=tls>\r\n\
+         Expires: 300\r\n\
+         {authorization}Content-Length: 0\r\n\
+         \r\n",
+        domain = cfg.domain,
+        username = cfg.username,
+    )
+}
+
+fn build_register_authorization(
+    cfg: &SipEndpointConfig,
+    nonce: &str,
+    realm: &str,
+    nc: &str,
+    cnonce: &str,
+) -> String {
+    let uri = format!("sip:{}", cfg.domain);
+    let ha1 = md5_hex(&format!("{}:{}:{}", cfg.username, realm, cfg.password));
+    let ha2 = md5_hex(&format!("REGISTER:{uri}"));
+    let response = md5_hex(&format!("{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}"));
+
+    format!(
+        "Digest username=\"{username}\", realm=\"{realm}\", nonce=\"{nonce}\", uri=\"{uri}\", response=\"{response}\", algorithm=MD5, qop=auth, nc={nc}, cnonce=\"{cnonce}\"",
+        username = cfg.username,
+    )
+}
+
+async fn recv_matching_event<F>(
+    events: &mut mpsc::UnboundedReceiver<SipEvent>,
+    label: &str,
+    timeout: std::time::Duration,
+    predicate: F,
+) -> anyhow::Result<SipEvent>
+where
+    F: Fn(&SipEvent) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let now = tokio::time::Instant::now();
+        anyhow::ensure!(now < deadline, "{label} timed out");
+        let remaining = deadline.saturating_duration_since(now);
+        let event = tokio::time::timeout(remaining, events.recv())
             .await
             .map_err(|_| anyhow::anyhow!("{label} timed out"))?
             .ok_or_else(|| anyhow::anyhow!("{label} channel closed"))?;
 
         if predicate(&event) {
-            Ok(())
-        } else {
-            anyhow::bail!("{label} received unexpected event: {:?}", event);
+            return Ok(event);
         }
     }
 }
@@ -236,10 +326,20 @@ fn parse_event(raw: &str) -> Option<SipEvent> {
     let from = header_value_case_insensitive(raw, "From").unwrap_or_default();
     let cseq = header_value_case_insensitive(raw, "CSeq").unwrap_or_default();
     let cseq_method = cseq.split_whitespace().last().unwrap_or("").to_string();
+    let www_authenticate = header_value_case_insensitive(raw, "WWW-Authenticate");
     let body = raw
         .split_once("\r\n\r\n")
         .map(|(_, rest)| rest.to_string())
         .unwrap_or_default();
+
+    if raw.starts_with("SIP/2.0 401")
+        && let Some(www_authenticate) = www_authenticate
+    {
+        return Some(SipEvent::AuthChallenge {
+            cseq_method,
+            auth_params: parse_auth_params(&www_authenticate),
+        });
+    }
 
     if raw.starts_with("SIP/2.0 200") {
         if cseq_method == "REGISTER" {
@@ -478,13 +578,8 @@ mod tests {
             insecure_tls: true,
         };
 
-        let auth = build_register_authorization(
-            &cfg,
-            "abc123",
-            "sip.air32.cn",
-            "00000001",
-            "deadbeef",
-        );
+        let auth =
+            build_register_authorization(&cfg, "abc123", "sip.air32.cn", "00000001", "deadbeef");
 
         assert!(auth.starts_with("Digest "));
         assert!(auth.contains("username=\"1001\""));
@@ -494,7 +589,7 @@ mod tests {
         assert!(auth.contains("qop=auth"));
         assert!(auth.contains("nc=00000001"));
         assert!(auth.contains("cnonce=\"deadbeef\""));
-        assert!(auth.contains("response=\"40f1d2334df8ca4ff05f3bed0270116f\""));
+        assert!(auth.contains("response=\"3d8fdc8bb6d71bceb6cc2e51151f3387\""));
     }
 
     #[tokio::test]
@@ -510,9 +605,12 @@ mod tests {
         })
         .expect("queue matching event");
 
-        let event = recv_matching_event(&mut rx, "MESSAGE", std::time::Duration::from_secs(1), |event| {
-            matches!(event, SipEvent::Ok { cseq_method } if cseq_method == "MESSAGE")
-        })
+        let event = recv_matching_event(
+            &mut rx,
+            "MESSAGE",
+            std::time::Duration::from_secs(1),
+            |event| matches!(event, SipEvent::Ok { cseq_method } if cseq_method == "MESSAGE"),
+        )
         .await
         .expect("should skip unrelated event");
 

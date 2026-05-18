@@ -237,7 +237,7 @@ npm install
 npm run dev         # dev server on :5173
 ```
 
-### Headless SIP regression tester
+## Headless SIP regression tester
 
 Run the fixed TLS regression scenarios against a reachable SIP3 deployment:
 

@@ -9,6 +9,7 @@ use super::assertions::ScenarioOutcome;
 use super::dialog::DialogTrace;
 use super::endpoint::{SipEndpoint, SipEndpointConfig, SipEvent};
 use super::rtp_probe::RtpProbe;
+use crate::sip::handler::{extract_uri, uri_username};
 use crate::sip::media::sdp_rtp_addr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,9 +69,23 @@ pub async fn run_scenario(cfg: &TesterConfig) -> Result<ScenarioOutcome> {
             caller
                 .send_message(&cfg.callee.username, "hello-from-caller")
                 .await?;
+            expect_event(
+                &mut callee,
+                "MESSAGE receipt",
+                Duration::from_secs(5),
+                |event| message_event_matches(event, &cfg.caller.username, "hello-from-caller"),
+            )
+            .await?;
             callee
                 .send_message(&cfg.caller.username, "hello-from-callee")
                 .await?;
+            expect_event(
+                &mut caller,
+                "MESSAGE receipt",
+                Duration::from_secs(5),
+                |event| message_event_matches(event, &cfg.callee.username, "hello-from-callee"),
+            )
+            .await?;
             Ok(ScenarioOutcome::pass(
                 "tls_message_dual",
                 "two-way MESSAGE completed over TLS",
@@ -259,6 +274,22 @@ where
         if predicate(&event) {
             return Ok(event);
         }
+    }
+}
+
+fn message_event_matches(
+    event: &SipEvent,
+    expected_from_username: &str,
+    expected_body: &str,
+) -> bool {
+    match event {
+        SipEvent::MessageReceived { from, body } => {
+            body == expected_body
+                && extract_uri(from)
+                    .and_then(|uri| uri_username(&uri))
+                    .is_some_and(|username| username == expected_from_username)
+        }
+        _ => false,
     }
 }
 
@@ -460,16 +491,8 @@ mod tests {
             body: "hello-from-caller".into(),
         };
 
-        assert!(message_event_matches(
-            &event,
-            "1001",
-            "hello-from-caller"
-        ));
-        assert!(!message_event_matches(
-            &event,
-            "1002",
-            "hello-from-caller"
-        ));
+        assert!(message_event_matches(&event, "1001", "hello-from-caller"));
+        assert!(!message_event_matches(&event, "1002", "hello-from-caller"));
         assert!(!message_event_matches(&event, "1001", "wrong-body"));
     }
 }
