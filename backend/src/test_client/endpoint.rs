@@ -25,7 +25,10 @@ where
         let mut line = String::new();
         let read = reader.read_line(&mut line).await?;
         if read == 0 {
-            return Ok(None);
+            if headers.is_empty() {
+                return Ok(None);
+            }
+            return Err(anyhow::anyhow!("unexpected EOF while reading SIP headers"));
         }
 
         let blank = line == "\r\n" || line == "\n";
@@ -255,6 +258,7 @@ mod tests {
         let raw = build_message_request(&cfg, "1003", "hello", "call-1", 1);
 
         assert!(raw.starts_with("MESSAGE sip:1003@sip.air32.cn SIP/2.0\r\n"));
+        assert!(raw.contains("Via: SIP/2.0/TLS tester.invalid;branch=z9hG4bK-call-1;rport\r\n"));
         assert!(raw.contains("Contact: <sip:1001@sip.air32.cn;transport=tls>\r\n"));
         assert!(raw.contains("Content-Length: 5\r\n\r\nhello"));
     }
@@ -329,5 +333,21 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn read_one_sip_message_errors_on_truncated_headers() {
+        let (mut client, server) = tokio::io::duplex(256);
+        tokio::spawn(async move {
+            client
+                .write_all(b"SIP/2.0 200 OK\r\nContent-L")
+                .await
+                .unwrap();
+        });
+
+        let mut reader = BufReader::new(server);
+        let result = read_one_sip_message(&mut reader).await;
+
+        assert!(result.is_err(), "expected truncated headers to fail");
     }
 }
