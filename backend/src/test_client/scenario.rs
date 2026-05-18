@@ -452,4 +452,24 @@ mod tests {
             ScenarioStatus::Passed
         );
     }
+
+    #[test]
+    fn message_event_matches_requires_expected_sender_and_body() {
+        let event = SipEvent::MessageReceived {
+            from: "<sip:1001@sip.air32.cn>;tag=abc".into(),
+            body: "hello-from-caller".into(),
+        };
+
+        assert!(message_event_matches(
+            &event,
+            "1001",
+            "hello-from-caller"
+        ));
+        assert!(!message_event_matches(
+            &event,
+            "1002",
+            "hello-from-caller"
+        ));
+        assert!(!message_event_matches(&event, "1001", "wrong-body"));
+    }
 }

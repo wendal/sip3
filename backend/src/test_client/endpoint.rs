@@ -297,6 +297,7 @@ fn header_value_case_insensitive(raw: &str, name: &str) -> Option<String> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn read_one_sip_message_respects_content_length() {
@@ -354,6 +355,24 @@ mod tests {
             "SIP/2.0 200 OK\r\nCSeq: 7 MESSAGE\r\nCall-ID: msg-1\r\nContent-Length: 0\r\n\r\n",
         ) {
             Some(SipEvent::Ok { cseq_method }) => assert_eq!(cseq_method, "MESSAGE"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_401_register_becomes_auth_challenge() {
+        match parse_event(
+            "SIP/2.0 401 Unauthorized\r\nCSeq: 1 REGISTER\r\nCall-ID: reg-1\r\nWWW-Authenticate: Digest realm=\"sip.air32.cn\", nonce=\"abc123\", algorithm=MD5, qop=\"auth\"\r\nContent-Length: 0\r\n\r\n",
+        ) {
+            Some(SipEvent::AuthChallenge {
+                cseq_method,
+                auth_params,
+            }) => {
+                assert_eq!(cseq_method, "REGISTER");
+                assert_eq!(auth_params.get("realm"), Some(&"sip.air32.cn".to_string()));
+                assert_eq!(auth_params.get("nonce"), Some(&"abc123".to_string()));
+                assert_eq!(auth_params.get("qop"), Some(&"auth".to_string()));
+            }
             other => panic!("unexpected event: {other:?}"),
         }
     }
@@ -442,6 +461,63 @@ mod tests {
                 assert_eq!(from, "<sip:1002@sip.air32.cn>;tag=x");
                 assert_eq!(sdp, "v=0\r\n\r\n");
             }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_register_authorization_uses_digest_auth_fields() {
+        let cfg = SipEndpointConfig {
+            label: "caller".into(),
+            host: "sip.air32.cn".into(),
+            tls_port: 5061,
+            domain: "sip.air32.cn".into(),
+            realm: "sip.air32.cn".into(),
+            username: "1001".into(),
+            password: "secret1".into(),
+            insecure_tls: true,
+        };
+
+        let auth = build_register_authorization(
+            &cfg,
+            "abc123",
+            "sip.air32.cn",
+            "00000001",
+            "deadbeef",
+        );
+
+        assert!(auth.starts_with("Digest "));
+        assert!(auth.contains("username=\"1001\""));
+        assert!(auth.contains("realm=\"sip.air32.cn\""));
+        assert!(auth.contains("nonce=\"abc123\""));
+        assert!(auth.contains("uri=\"sip:sip.air32.cn\""));
+        assert!(auth.contains("qop=auth"));
+        assert!(auth.contains("nc=00000001"));
+        assert!(auth.contains("cnonce=\"deadbeef\""));
+        assert!(auth.contains("response=\"40f1d2334df8ca4ff05f3bed0270116f\""));
+    }
+
+    #[tokio::test]
+    async fn recv_matching_event_skips_unrelated_events() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(SipEvent::MessageReceived {
+            from: "<sip:1002@sip.air32.cn>;tag=x".into(),
+            body: "hello".into(),
+        })
+        .expect("queue unrelated event");
+        tx.send(SipEvent::Ok {
+            cseq_method: "MESSAGE".into(),
+        })
+        .expect("queue matching event");
+
+        let event = recv_matching_event(&mut rx, "MESSAGE", std::time::Duration::from_secs(1), |event| {
+            matches!(event, SipEvent::Ok { cseq_method } if cseq_method == "MESSAGE")
+        })
+        .await
+        .expect("should skip unrelated event");
+
+        match event {
+            SipEvent::Ok { cseq_method } => assert_eq!(cseq_method, "MESSAGE"),
             other => panic!("unexpected event: {other:?}"),
         }
     }
