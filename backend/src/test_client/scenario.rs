@@ -59,6 +59,7 @@ pub async fn run_scenario(cfg: &TesterConfig) -> Result<ScenarioOutcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_client::assertions::ScenarioStatus;
 
     fn test_endpoint(label: &str, username: &str) -> SipEndpointConfig {
         SipEndpointConfig {
@@ -114,6 +115,7 @@ mod tests {
             .await
             .expect("run register scenario");
 
+        assert_eq!(outcome.status, ScenarioStatus::Passed);
         assert_eq!(outcome.name, "tls_register_dual");
         assert_eq!(
             outcome.detail,
@@ -127,6 +129,7 @@ mod tests {
             .await
             .expect("run message scenario");
 
+        assert_eq!(outcome.status, ScenarioStatus::Passed);
         assert_eq!(outcome.name, "tls_message_dual");
         assert_eq!(
             outcome.detail,
@@ -140,6 +143,7 @@ mod tests {
             .await
             .expect("run basic call scenario");
 
+        assert_eq!(outcome.status, ScenarioStatus::Passed);
         assert_eq!(outcome.name, "tls_basic_call");
         assert_eq!(
             outcome.detail,
