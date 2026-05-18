@@ -284,6 +284,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_event_180_invite_becomes_ringing() {
+        match parse_event(
+            "SIP/2.0 180 Ringing\r\nCSeq: 1 INVITE\r\nCall-ID: ring-1\r\nContent-Length: 0\r\n\r\n",
+        ) {
+            Some(SipEvent::Ringing { call_id }) => assert_eq!(call_id, "ring-1"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_200_invite_becomes_answered() {
+        match parse_event(
+            "SIP/2.0 200 OK\r\nCSeq: 1 INVITE\r\nCall-ID: ans-1\r\nContent-Type: application/sdp\r\nContent-Length: 7\r\n\r\nv=0\r\n\r\n",
+        ) {
+            Some(SipEvent::Answered { call_id, sdp }) => {
+                assert_eq!(call_id, "ans-1");
+                assert_eq!(sdp, "v=0\r\n\r\n");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_event_invite_request_becomes_invite_received() {
         match parse_event(
             "INVITE sip:1001@sip.air32.cn SIP/2.0\r\nCall-ID: inv-1\r\nFrom: <sip:1002@sip.air32.cn>;tag=x\r\nContent-Type: application/sdp\r\nContent-Length: 7\r\n\r\nv=0\r\n\r\n",
@@ -292,6 +315,19 @@ mod tests {
                 assert_eq!(call_id, "inv-1");
                 assert_eq!(from, "<sip:1002@sip.air32.cn>;tag=x");
                 assert_eq!(sdp, "v=0\r\n\r\n");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_message_request_becomes_message_received() {
+        match parse_event(
+            "MESSAGE sip:1001@sip.air32.cn SIP/2.0\r\nFrom: <sip:1002@sip.air32.cn>;tag=x\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello",
+        ) {
+            Some(SipEvent::MessageReceived { from, body }) => {
+                assert_eq!(from, "<sip:1002@sip.air32.cn>;tag=x");
+                assert_eq!(body, "hello");
             }
             other => panic!("unexpected event: {other:?}"),
         }
