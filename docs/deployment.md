@@ -46,6 +46,12 @@ Services started:
 - GitHub Actions -> GHCR (`ghcr.io/wendal/sip3/backend`, `ghcr.io/wendal/sip3/frontend`)
 - GitLab CI -> Harbor (`harbor.air32.cn/sip3/backend`, `harbor.air32.cn/sip3/frontend`) via self-hosted runners tagged `linux`
 
+The current GitLab CI path runs on a self-hosted **Linux shell runner**, so the runner host must provide:
+
+- Rust 1.95 toolchain for the `gitlab-runner` user (`cargo`, `rustc`, `cargo fmt`, `cargo clippy`)
+- Node.js 20 + npm
+- Docker CLI plus daemon access for `gitlab-runner` (for Harbor image build/push)
+
 GitHub Actions publishes backend and frontend images to:
 
 - `ghcr.io/wendal/sip3/backend`
