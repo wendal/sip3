@@ -515,6 +515,10 @@ impl SipHandler {
         self.transport_registry.unregister(src);
     }
 
+    pub(crate) fn transport_registry(&self) -> TransportRegistry {
+        self.transport_registry.clone()
+    }
+
     async fn send_to_addr(&self, message: String, addr: SocketAddr) -> Result<()> {
         if !self.transport_registry.send(addr, message.clone()) {
             self.socket.send_to(message.as_bytes(), addr).await?;
@@ -545,6 +549,12 @@ impl SipHandler {
         let method = match &msg.method {
             Some(m) => m.clone(),
             None => {
+                info!(
+                    "SIP response {} {} from {}",
+                    msg.status_code.unwrap_or(0),
+                    msg.cseq().unwrap_or(""),
+                    src
+                );
                 // SIP response from callee — relay back to the original caller.
                 self.relay_response(&msg).await;
                 return Ok(None);
@@ -696,20 +706,21 @@ impl SipHandler {
         };
 
         if let Some(addr) = caller_addr {
-            let stream_to_stream = {
-                let active = self.active_dialogs.lock().await;
-                active
-                    .get(&call_id)
-                    .map(|d| d.caller_is_stream && d.callee_is_stream)
-                    .unwrap_or(false)
-            };
+            if msg.status_code == Some(200) && msg.cseq().is_some_and(|c| c.ends_with("INVITE")) {
+                info!(
+                    "Handling 200 INVITE response for call {}: content-type={:?}, body_len={}",
+                    call_id,
+                    msg.header("content-type"),
+                    msg.body.len()
+                );
+            }
             // Strip the Via we added when forwarding the INVITE.
             let relayed = strip_proxy_via(&msg.raw, &self.cfg.server.sip_domain);
 
             // On a 200 OK to an INVITE that carries SDP, substitute the appropriate SDP.
             // If this is a WebRTC call, use the stored WebRTC answer SDP.
             // Otherwise rewrite the body so the caller sends RTP to our relay_b port.
-            let relayed = if is_invite_200_ok_with_sdp(msg) && !stream_to_stream {
+            let relayed = if is_invite_200_ok_with_sdp(msg) {
                 if let Some(answer_sdp) = self.webrtc_gateway.get_answer_sdp(&call_id).await {
                     if self.webrtc_gateway.is_sip_caller_session(&call_id).await {
                         if let Err(e) = self
@@ -770,6 +781,12 @@ impl SipHandler {
                 "No pending dialog for call-id {}, dropping response",
                 call_id
             );
+            if msg.status_code == Some(200) && msg.cseq().is_some_and(|c| c.ends_with("INVITE")) {
+                warn!(
+                    "Dropping 200 INVITE response for call {} because pending dialog is missing",
+                    call_id
+                );
+            }
         }
     }
 
@@ -795,5 +812,88 @@ impl SipHandler {
             .header("Allow", SIP_ALLOW_METHODS)
             .header("Accept", "application/sdp, text/plain")
             .build())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::MySqlPool;
+
+    #[tokio::test]
+    async fn relay_response_rewrites_200ok_sdp_for_stream_to_stream_plain_sip_calls() {
+        let cfg = Config::load().expect("config should load");
+        let pool =
+            MySqlPool::connect_lazy("mysql://root:root@127.0.0.1:3306/sip3").expect("lazy pool");
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bind udp"));
+        let handler = SipHandler::with_socket(cfg.clone(), pool, socket);
+
+        let call_id = format!("stream-to-stream-sdp-{}", std::process::id());
+        let caller_addr: SocketAddr = "127.0.0.1:55060".parse().expect("caller addr");
+        let callee_addr: SocketAddr = "127.0.0.1:55061".parse().expect("callee addr");
+        let mut rx = handler.register_stream(caller_addr);
+
+        let (_relay_a, relay_b) = handler
+            .media_relay
+            .allocate_session(call_id.clone())
+            .await
+            .expect("allocate media relay");
+
+        handler
+            .pending_dialogs
+            .lock()
+            .await
+            .insert(call_id.clone(), caller_addr);
+        handler.active_dialogs.lock().await.insert(
+            call_id.clone(),
+            DialogInfo {
+                caller_addr,
+                callee_addr,
+                caller_is_stream: true,
+                callee_is_stream: true,
+            },
+        );
+
+        let raw_response = format!(
+            "SIP/2.0 200 OK\r\n\
+             Via: SIP/2.0/UDP sip.air32.cn;branch=z9hG4bKproxy123\r\n\
+             Via: SIP/2.0/TLS 192.0.2.10:5061;branch=z9hG4bKorig\r\n\
+             From: <sip:1001@sip.air32.cn>;tag=caller\r\n\
+             To: <sip:1003@sip.air32.cn>;tag=callee\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: 1 INVITE\r\n\
+             Contact: <sip:1003@192.168.31.27:56044;transport=tls>\r\n\
+             Content-Type: application/sdp\r\n\
+             Content-Length: 117\r\n\
+             \r\n\
+             v=0\r\n\
+             o=- 0 0 IN IP4 192.168.31.27\r\n\
+             s=-\r\n\
+             c=IN IP4 192.168.31.27\r\n\
+             t=0 0\r\n\
+             m=audio 56044 RTP/AVP 0 8\r\n\
+             a=rtpmap:0 PCMU/8000\r\n\
+             a=rtpmap:8 PCMA/8000\r\n"
+        );
+        let msg = SipMessage::parse(&raw_response).expect("parse 200 OK");
+
+        handler.relay_response(&msg).await;
+
+        let relayed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("wait for relayed response")
+            .expect("relayed response");
+
+        assert!(
+            relayed.contains(&format!("c=IN IP4 {}\r\n", cfg.server.public_ip)),
+            "200 OK SDP should advertise relay public IP"
+        );
+        assert!(
+            relayed.contains(&format!("m=audio {} RTP/AVP 0 8\r\n", relay_b)),
+            "200 OK SDP should direct caller to relay_b"
+        );
+
+        handler.media_relay.remove_session(&call_id).await;
+        handler.unregister_stream(caller_addr);
     }
 }

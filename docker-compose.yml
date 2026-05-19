@@ -34,6 +34,10 @@ services:
       SIP3__SERVER__API_PORT: ${SIP3__SERVER__API_PORT:-3000}
       SIP3__SERVER__SIP_DOMAIN: ${SIP3__SERVER__SIP_DOMAIN:-sip.air32.cn}
       SIP3__SERVER__PUBLIC_IP: ${SIP3__SERVER__PUBLIC_IP:?set SIP3__SERVER__PUBLIC_IP}
+      SIP3__SERVER__TLS_CERT: ${SIP3__SERVER__TLS_CERT:-}
+      SIP3__SERVER__TLS_KEY: ${SIP3__SERVER__TLS_KEY:-}
+      SIP3__SERVER__WS_PORT: ${SIP3__SERVER__WS_PORT:-5080}
+      SIP3__SERVER__WSS_PORT: ${SIP3__SERVER__WSS_PORT:-5443}
       SIP3__SERVER__RTP_PORT_MIN: ${SIP3__SERVER__RTP_PORT_MIN:-10000}
       SIP3__SERVER__RTP_PORT_MAX: ${SIP3__SERVER__RTP_PORT_MAX:-10099}
       SIP3__SERVER__CONFERENCE_RTP_PORT_MIN: ${SIP3__SERVER__CONFERENCE_RTP_PORT_MIN:-10100}
@@ -61,6 +65,7 @@ services:
       - "20000-20099:20000-20099/udp"
     volumes:
       - ./voicemail:/app/voicemail
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 15s
