@@ -104,6 +104,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn run_token_is_unique_across_calls() {
+        let first = new_run_token();
+        let second = new_run_token();
+
+        assert!(!first.is_empty());
+        assert!(!second.is_empty());
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn parse_args_accepts_tls_basic_call() {
         let args = vec![
             "headless_call_tester".to_string(),

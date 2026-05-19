@@ -508,6 +508,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_event_486_invite_becomes_error_response() {
+        match parse_event(
+            "SIP/2.0 486 Busy Here\r\nCSeq: 1 INVITE\r\nCall-ID: call-1\r\nContent-Length: 0\r\n\r\n",
+        ) {
+            Some(SipEvent::ErrorResponse {
+                status_code,
+                reason,
+                cseq_method,
+            }) => {
+                assert_eq!(status_code, 486);
+                assert_eq!(reason, "Busy Here");
+                assert_eq!(cseq_method, "INVITE");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_event_180_invite_becomes_ringing() {
         match parse_event(
             "SIP/2.0 180 Ringing\r\nCSeq: 1 INVITE\r\nCall-ID: ring-1\r\nContent-Length: 0\r\n\r\n",
@@ -649,6 +667,30 @@ mod tests {
             SipEvent::Ok { cseq_method } => assert_eq!(cseq_method, "MESSAGE"),
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn recv_matching_event_returns_explicit_sip_failure() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(SipEvent::ErrorResponse {
+            status_code: 486,
+            reason: "Busy Here".into(),
+            cseq_method: "INVITE".into(),
+        })
+        .expect("queue failure event");
+
+        let err = recv_matching_event(
+            &mut rx,
+            "INVITE",
+            std::time::Duration::from_secs(1),
+            |event| matches!(event, SipEvent::Answered { .. }),
+        )
+        .await
+        .expect_err("failure response should not time out");
+
+        assert!(err.to_string().contains("486"));
+        assert!(err.to_string().contains("Busy Here"));
+        assert!(err.to_string().contains("INVITE"));
     }
 
     #[tokio::test]

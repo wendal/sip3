@@ -535,8 +535,18 @@ mod tests {
     fn require_relay_target_rejects_direct_answer_target() {
         let direct = "127.0.0.1:40000".parse().expect("direct addr");
 
-        let err = require_relay_target(direct, direct).expect_err("direct target must fail");
+        let err = require_relay_target("answer", direct, direct).expect_err("direct target must fail");
 
+        assert!(err.to_string().contains("relay target"));
+    }
+
+    #[test]
+    fn require_relay_target_rejects_direct_offer_target() {
+        let direct = "127.0.0.1:40002".parse().expect("direct addr");
+
+        let err = require_relay_target("offer", direct, direct).expect_err("direct target must fail");
+
+        assert!(err.to_string().contains("offer"));
         assert!(err.to_string().contains("relay target"));
     }
 }
