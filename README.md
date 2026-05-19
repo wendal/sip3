@@ -274,6 +274,7 @@ The tester exits non-zero on scenario failure and now surfaces explicit SIP fail
 - **Conference has no audio / cannot join**: confirm the room is enabled, the phone offers RTP/AVP PCMU or PCMA, and UDP `10100-10199` is open.
 - **Voicemail does not answer / MWI not updated**: confirm the mailbox is enabled, the caller/subscriber source matches an active registration, UDP `10200-10299` is open, and prompt/storage directories are writable.
 - **MESSAGE persistence errors (1146)**: ensure migration `010_sip_messages.sql` has been applied.
+- **GitLab CI Harbor publish fails**: for the current self-hosted `linux` shell runner, ensure GitLab CI/CD variables `HARBOR_USER` and `HARBOR_PASSWORD` are set, `gitlab-runner` can access the host Docker daemon, and avoid BuildKit-only Dockerfile syntax unless the runner host is intentionally managed around `docker buildx`.
 
 See [docs/deployment.md](docs/deployment.md) for full deployment and TLS setup guide.
 
