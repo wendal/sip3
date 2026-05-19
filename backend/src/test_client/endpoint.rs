@@ -15,6 +15,7 @@ pub struct SipEndpointConfig {
     pub realm: String,
     pub username: String,
     pub password: String,
+    pub run_token: String,
     pub insecure_tls: bool,
 }
 
@@ -162,7 +163,7 @@ impl SipEndpoint {
     }
 
     pub async fn register(&mut self) -> anyhow::Result<()> {
-        let call_id = format!("register-{}", self.cfg.username);
+        let call_id = run_scoped_id(&["register", &self.cfg.username], &self.cfg.run_token);
         let raw = build_register_request(&self.cfg, &call_id, 1, None);
         self.send_raw(&raw).await?;
         let event = self
@@ -213,13 +214,11 @@ impl SipEndpoint {
     }
 
     pub async fn send_message(&mut self, to_username: &str, body: &str) -> anyhow::Result<()> {
-        let raw = build_message_request(
-            &self.cfg,
-            to_username,
-            body,
-            &format!("message-{}-{}", self.cfg.username, to_username),
-            1,
+        let call_id = run_scoped_id(
+            &["message", &self.cfg.username, to_username],
+            &self.cfg.run_token,
         );
+        let raw = build_message_request(&self.cfg, to_username, body, &call_id, 1);
         self.send_raw(&raw).await?;
         let _ = self
             .expect_event(
@@ -250,6 +249,13 @@ impl SipEndpoint {
     {
         recv_matching_event(&mut self.events, label, timeout, predicate).await
     }
+}
+
+pub(crate) fn run_scoped_id(parts: &[&str], run_token: &str) -> String {
+    let mut id = parts.join("-");
+    id.push('-');
+    id.push_str(run_token);
+    id
 }
 
 fn build_register_request(

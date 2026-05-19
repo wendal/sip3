@@ -2,6 +2,7 @@ use anyhow::Result;
 use sip3_backend::test_client::assertions::ScenarioStatus;
 use sip3_backend::test_client::endpoint::SipEndpointConfig;
 use sip3_backend::test_client::scenario::{ScenarioName, TesterConfig, run_scenario};
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 struct CliArgs {
@@ -52,6 +53,7 @@ impl CliArgs {
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let cli = CliArgs::parse(&args)?;
+    let run_token = Uuid::new_v4().simple().to_string();
 
     let caller = SipEndpointConfig {
         label: "caller".into(),
@@ -61,6 +63,7 @@ async fn main() -> Result<()> {
         realm: cli.realm.clone(),
         username: cli.caller.clone(),
         password: cli.caller_password.clone(),
+        run_token: run_token.clone(),
         insecure_tls: cli.insecure_tls,
     };
     let callee = SipEndpointConfig {
@@ -71,6 +74,7 @@ async fn main() -> Result<()> {
         realm: cli.realm.clone(),
         username: cli.callee.clone(),
         password: cli.callee_password.clone(),
+        run_token,
         insecure_tls: cli.insecure_tls,
     };
 

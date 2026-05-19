@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 
 use super::assertions::ScenarioOutcome;
 use super::dialog::DialogTrace;
-use super::endpoint::{SipEndpoint, SipEndpointConfig, SipEvent};
+use super::endpoint::{SipEndpoint, SipEndpointConfig, SipEvent, run_scoped_id};
 use super::rtp_probe::RtpProbe;
 use crate::sip::handler::{extract_uri, uri_username};
 use crate::sip::media::sdp_rtp_addr;
@@ -111,7 +111,10 @@ async fn run_tls_basic_call(
         callee_probe.spawn_receiver(),
     ]);
 
-    let call_id = format!("call-{}-{}", caller.cfg.username, callee.cfg.username);
+    let call_id = run_scoped_id(
+        &["call", &caller.cfg.username, &callee.cfg.username],
+        &caller.cfg.run_token,
+    );
     let mut trace = DialogTrace::new(&call_id);
     let offer = build_audio_sdp(caller_probe.local_addr());
     send_raw(
@@ -173,11 +176,13 @@ async fn run_tls_basic_call(
         SipEvent::Answered { sdp, .. } => sdp,
         other => anyhow::bail!("unexpected INVITE answer event: {:?}", other),
     };
+    let answer_target = sdp_rtp_addr(&answer_sdp)
+        .ok_or_else(|| anyhow::anyhow!("callee answer missing RTP address"))?;
     caller_probe
-        .set_peer(
-            sdp_rtp_addr(&answer_sdp)
-                .ok_or_else(|| anyhow::anyhow!("callee answer missing RTP address"))?,
-        )
+        .set_peer(require_relay_target(
+            answer_target,
+            callee_probe.local_addr(),
+        )?)
         .await;
     trace.on_answered();
 
@@ -291,6 +296,20 @@ fn message_event_matches(
         }
         _ => false,
     }
+}
+
+fn require_relay_target(
+    answer_target: SocketAddr,
+    direct_target: SocketAddr,
+) -> Result<SocketAddr> {
+    if answer_target == direct_target {
+        anyhow::bail!(
+            "expected relay target in 200 OK SDP, got direct callee target {}",
+            direct_target
+        );
+    }
+
+    Ok(answer_target)
 }
 
 fn build_audio_sdp(addr: SocketAddr) -> String {
