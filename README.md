@@ -257,6 +257,14 @@ cargo run --bin headless_call_tester -- `
   --insecure-tls
 ```
 
+Supported scenarios:
+
+- `tls_register_dual` - both TLS endpoints authenticate and register successfully
+- `tls_message_dual` - both endpoints exchange SIP MESSAGE successfully over TLS
+- `tls_basic_call` - both endpoints complete a TLS call and the tester requires SIP3 to rewrite both SDP legs to relay targets before counting bidirectional RTP packets
+
+The tester exits non-zero on scenario failure and now surfaces explicit SIP failures such as `403`, `407`, `486`, and `5xx` instead of timing out generically.
+
 ### Troubleshooting
 
 - **No ringing / MESSAGE not delivered**: check `sip_registrations.source_ip/source_port` against the sender's real source socket.

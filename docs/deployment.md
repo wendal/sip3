@@ -203,7 +203,27 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 ### Headless SIP smoke probe
 
-Use `cargo run --bin headless_call_tester` for non-destructive TLS smoke checks. The probe validates signaling and bidirectional RTP reachability; it is not a load generator.
+Use `cargo run --bin headless_call_tester` for non-destructive TLS smoke checks. The probe validates authenticated TLS signaling, requires SIP3 to rewrite both SDP legs to relay targets, and then checks bidirectional RTP reachability. It is not a load generator.
+
+Example:
+
+```powershell
+cd backend
+cargo run --bin headless_call_tester -- `
+  --target sip.air32.cn `
+  --tls-port 5061 `
+  --domain sip.air32.cn `
+  --realm sip.air32.cn `
+  --scenario tls_basic_call `
+  --caller 1001 `
+  --caller-password <password> `
+  --callee 1003 `
+  --callee-password <password> `
+  --rtp-threshold 8 `
+  --insecure-tls
+```
+
+Use `tls_register_dual` and `tls_message_dual` for narrower checks. Non-2xx SIP responses are reported directly in probe output so CI failures do not collapse into generic timeouts.
 
 ## RTP Media Relay
 
