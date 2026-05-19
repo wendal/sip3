@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::assertions::ScenarioOutcome;
@@ -271,17 +272,35 @@ async fn expect_event<F>(
 where
     F: Fn(&SipEvent) -> bool,
 {
+    recv_matching_event(&mut endpoint.events, label, timeout, predicate).await
+}
+
+async fn recv_matching_event<F>(
+    events: &mut mpsc::UnboundedReceiver<SipEvent>,
+    label: &str,
+    timeout: Duration,
+    predicate: F,
+) -> Result<SipEvent>
+where
+    F: Fn(&SipEvent) -> bool,
+{
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let now = tokio::time::Instant::now();
         anyhow::ensure!(now < deadline, "{label} timed out");
         let remaining = deadline.saturating_duration_since(now);
-        let event = tokio::time::timeout(remaining, endpoint.events.recv())
+        let event = tokio::time::timeout(remaining, events.recv())
             .await
             .map_err(|_| anyhow::anyhow!("{label} timed out"))?
             .ok_or_else(|| anyhow::anyhow!("{label} channel closed"))?;
-        if predicate(&event) {
-            return Ok(event);
+        match &event {
+            SipEvent::ErrorResponse {
+                status_code,
+                reason,
+                cseq_method,
+            } => anyhow::bail!("{label} failed with SIP {status_code} {reason} ({cseq_method})"),
+            _ if predicate(&event) => return Ok(event),
+            _ => {}
         }
     }
 }
@@ -435,7 +454,6 @@ impl Drop for ReceiverTasks {
 mod tests {
     use super::*;
     use crate::test_client::assertions::ScenarioStatus;
-    use tokio::sync::mpsc;
 
     fn test_endpoint(label: &str, username: &str) -> SipEndpointConfig {
         SipEndpointConfig {
@@ -569,12 +587,9 @@ mod tests {
         })
         .expect("queue failure event");
 
-        let err = recv_matching_event(
-            &mut rx,
-            "INVITE",
-            Duration::from_secs(1),
-            |event| matches!(event, SipEvent::Answered { .. }),
-        )
+        let err = recv_matching_event(&mut rx, "INVITE", Duration::from_secs(1), |event| {
+            matches!(event, SipEvent::Answered { .. })
+        })
         .await
         .expect_err("failure response should not time out");
 
