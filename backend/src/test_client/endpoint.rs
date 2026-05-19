@@ -428,6 +428,7 @@ mod tests {
             realm: "sip.air32.cn".into(),
             username: "1001".into(),
             password: "secret".into(),
+            run_token: "run123".into(),
             insecure_tls: true,
         };
 
@@ -437,6 +438,29 @@ mod tests {
         assert!(raw.contains("Via: SIP/2.0/TLS tester.invalid;branch=z9hG4bK-call-1;rport\r\n"));
         assert!(raw.contains("Contact: <sip:1001@sip.air32.cn;transport=tls>\r\n"));
         assert!(raw.contains("Content-Length: 5\r\n\r\nhello"));
+    }
+
+    #[test]
+    fn build_register_and_message_requests_include_run_token() {
+        let cfg = SipEndpointConfig {
+            label: "caller".into(),
+            host: "sip.air32.cn".into(),
+            tls_port: 5061,
+            domain: "sip.air32.cn".into(),
+            realm: "sip.air32.cn".into(),
+            username: "1001".into(),
+            password: "secret".into(),
+            run_token: "run123".into(),
+            insecure_tls: true,
+        };
+
+        let register = build_register_request(&cfg, "register-1001-run123", 1, None);
+        let message = build_message_request(&cfg, "1003", "hello", "message-1001-1003-run123", 1);
+
+        assert!(register.contains("Call-ID: register-1001-run123\r\n"));
+        assert!(register.contains("branch=z9hG4bK-register-1001-run123"));
+        assert!(message.contains("Call-ID: message-1001-1003-run123\r\n"));
+        assert!(message.contains("branch=z9hG4bK-message-1001-1003-run123"));
     }
 
     #[test]
@@ -575,6 +599,7 @@ mod tests {
             realm: "sip.air32.cn".into(),
             username: "1001".into(),
             password: "secret1".into(),
+            run_token: "run123".into(),
             insecure_tls: true,
         };
 

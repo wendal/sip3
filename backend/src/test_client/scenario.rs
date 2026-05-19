@@ -420,6 +420,7 @@ mod tests {
             realm: "sip.air32.cn".to_string(),
             username: username.to_string(),
             password: "secret".to_string(),
+            run_token: "test-run".to_string(),
             insecure_tls: true,
         }
     }
@@ -494,5 +495,29 @@ mod tests {
         assert!(message_event_matches(&event, "1001", "hello-from-caller"));
         assert!(!message_event_matches(&event, "1002", "hello-from-caller"));
         assert!(!message_event_matches(&event, "1001", "wrong-body"));
+    }
+
+    #[test]
+    fn build_invite_request_includes_run_token() {
+        let cfg = test_endpoint("caller", "1001");
+
+        let invite = build_invite_request(
+            &cfg,
+            "1002",
+            "call-1001-1002-test-run",
+            "v=0\r\nm=audio 1234 RTP/AVP 0\r\n",
+        );
+
+        assert!(invite.contains("Call-ID: call-1001-1002-test-run\r\n"));
+        assert!(invite.contains("branch=z9hG4bK-call-1001-1002-test-run"));
+    }
+
+    #[test]
+    fn require_relay_target_rejects_direct_answer_target() {
+        let direct = "127.0.0.1:40000".parse().expect("direct addr");
+
+        let err = require_relay_target(direct, direct).expect_err("direct target must fail");
+
+        assert!(err.to_string().contains("relay target"));
     }
 }
