@@ -138,11 +138,14 @@ async fn run_tls_basic_call(
         }
         other => anyhow::bail!("unexpected INVITE event: {:?}", other),
     };
+    let invite_target = sdp_rtp_addr(&invite_sdp)
+        .ok_or_else(|| anyhow::anyhow!("caller offer missing RTP address"))?;
     callee_probe
-        .set_peer(
-            sdp_rtp_addr(&invite_sdp)
-                .ok_or_else(|| anyhow::anyhow!("caller offer missing RTP address"))?,
-        )
+        .set_peer(require_relay_target(
+            "offer",
+            invite_target,
+            caller_probe.local_addr(),
+        )?)
         .await;
 
     send_raw(
@@ -180,6 +183,7 @@ async fn run_tls_basic_call(
         .ok_or_else(|| anyhow::anyhow!("callee answer missing RTP address"))?;
     caller_probe
         .set_peer(require_relay_target(
+            "answer",
             answer_target,
             callee_probe.local_addr(),
         )?)
@@ -299,12 +303,14 @@ fn message_event_matches(
 }
 
 fn require_relay_target(
+    leg: &str,
     answer_target: SocketAddr,
     direct_target: SocketAddr,
 ) -> Result<SocketAddr> {
     if answer_target == direct_target {
         anyhow::bail!(
-            "expected relay target in 200 OK SDP, got direct callee target {}",
+            "expected relay target in {} SDP, got direct peer target {}",
+            leg,
             direct_target
         );
     }
@@ -535,7 +541,8 @@ mod tests {
     fn require_relay_target_rejects_direct_answer_target() {
         let direct = "127.0.0.1:40000".parse().expect("direct addr");
 
-        let err = require_relay_target("answer", direct, direct).expect_err("direct target must fail");
+        let err =
+            require_relay_target("answer", direct, direct).expect_err("direct target must fail");
 
         assert!(err.to_string().contains("relay target"));
     }
@@ -544,7 +551,8 @@ mod tests {
     fn require_relay_target_rejects_direct_offer_target() {
         let direct = "127.0.0.1:40002".parse().expect("direct addr");
 
-        let err = require_relay_target("offer", direct, direct).expect_err("direct target must fail");
+        let err =
+            require_relay_target("offer", direct, direct).expect_err("direct target must fail");
 
         assert!(err.to_string().contains("offer"));
         assert!(err.to_string().contains("relay target"));

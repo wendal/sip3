@@ -49,11 +49,15 @@ impl CliArgs {
     }
 }
 
+fn new_run_token() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let cli = CliArgs::parse(&args)?;
-    let run_token = Uuid::new_v4().simple().to_string();
+    let run_token = new_run_token();
 
     let caller = SipEndpointConfig {
         label: "caller".into(),

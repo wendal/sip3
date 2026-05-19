@@ -122,6 +122,11 @@ pub enum SipEvent {
     CancelReceived {
         call_id: String,
     },
+    ErrorResponse {
+        status_code: u16,
+        reason: String,
+        cseq_method: String,
+    },
     Ok {
         cseq_method: String,
     },
@@ -321,6 +326,20 @@ where
             .map_err(|_| anyhow::anyhow!("{label} timed out"))?
             .ok_or_else(|| anyhow::anyhow!("{label} channel closed"))?;
 
+        if let SipEvent::ErrorResponse {
+            status_code,
+            reason,
+            cseq_method,
+        } = &event
+        {
+            anyhow::bail!(
+                "{label} failed with SIP {} {} ({})",
+                status_code,
+                reason,
+                cseq_method
+            );
+        }
+
         if predicate(&event) {
             return Ok(event);
         }
@@ -328,6 +347,7 @@ where
 }
 
 fn parse_event(raw: &str) -> Option<SipEvent> {
+    let first_line = raw.lines().next().unwrap_or_default();
     let call_id = header_value_case_insensitive(raw, "Call-ID").unwrap_or_default();
     let from = header_value_case_insensitive(raw, "From").unwrap_or_default();
     let cseq = header_value_case_insensitive(raw, "CSeq").unwrap_or_default();
@@ -361,6 +381,21 @@ fn parse_event(raw: &str) -> Option<SipEvent> {
 
     if raw.starts_with("SIP/2.0 180") && cseq_method == "INVITE" {
         return Some(SipEvent::Ringing { call_id });
+    }
+
+    if raw.starts_with("SIP/2.0 ")
+        && let Some(status_code) = first_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|value| value.parse::<u16>().ok())
+        && status_code >= 300
+    {
+        let reason = first_line.splitn(3, ' ').nth(2).unwrap_or("").to_string();
+        return Some(SipEvent::ErrorResponse {
+            status_code,
+            reason,
+            cseq_method,
+        });
     }
 
     if raw.starts_with("INVITE ") {

@@ -1,8 +1,7 @@
- 
 use anyhow::Result;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
@@ -86,8 +85,14 @@ mod tests {
         let caller_task = caller.spawn_receiver();
         let callee_task = callee.spawn_receiver();
 
-        caller.send_packets(8, Duration::from_millis(5)).await.expect("caller send");
-        callee.send_packets(8, Duration::from_millis(5)).await.expect("callee send");
+        caller
+            .send_packets(8, Duration::from_millis(5))
+            .await
+            .expect("caller send");
+        callee
+            .send_packets(8, Duration::from_millis(5))
+            .await
+            .expect("callee send");
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
