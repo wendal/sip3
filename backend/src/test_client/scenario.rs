@@ -435,6 +435,7 @@ impl Drop for ReceiverTasks {
 mod tests {
     use super::*;
     use crate::test_client::assertions::ScenarioStatus;
+    use tokio::sync::mpsc;
 
     fn test_endpoint(label: &str, username: &str) -> SipEndpointConfig {
         SipEndpointConfig {
@@ -556,5 +557,29 @@ mod tests {
 
         assert!(err.to_string().contains("offer"));
         assert!(err.to_string().contains("relay target"));
+    }
+
+    #[tokio::test]
+    async fn recv_matching_event_returns_explicit_sip_failure() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(SipEvent::ErrorResponse {
+            status_code: 486,
+            reason: "Busy Here".into(),
+            cseq_method: "INVITE".into(),
+        })
+        .expect("queue failure event");
+
+        let err = recv_matching_event(
+            &mut rx,
+            "INVITE",
+            Duration::from_secs(1),
+            |event| matches!(event, SipEvent::Answered { .. }),
+        )
+        .await
+        .expect_err("failure response should not time out");
+
+        assert!(err.to_string().contains("486"));
+        assert!(err.to_string().contains("Busy Here"));
+        assert!(err.to_string().contains("INVITE"));
     }
 }
