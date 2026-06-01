@@ -10,6 +10,7 @@ pub struct ConferenceRoom {
     pub name: String,
     pub enabled: i8,
     pub max_participants: u32,
+    pub pin_hash: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -21,6 +22,7 @@ pub struct CreateConferenceRoom {
     pub domain: Option<String>,
     pub max_participants: Option<u32>,
     pub enabled: Option<i8>,
+    pub pin: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +31,7 @@ pub struct UpdateConferenceRoom {
     pub domain: Option<String>,
     pub max_participants: Option<u32>,
     pub enabled: Option<i8>,
+    pub pin: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow, Clone)]

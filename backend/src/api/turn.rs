@@ -1,10 +1,12 @@
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{extract::State, http::StatusCode, Json};
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sha1::Sha1;
+use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::net::TcpSocket;
 
 use super::AppState;
 
@@ -112,4 +114,79 @@ fn hmac_sha1_base64(key: &str, data: &str) -> String {
         HmacSha1::new_from_slice(key.as_bytes()).expect("HMAC accepts keys of any length");
     mac.update(data.as_bytes());
     base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+}
+
+#[derive(Serialize)]
+pub struct TurnHealthResponse {
+    pub enabled: bool,
+    pub servers: Vec<String>,
+    pub reachable: bool,
+}
+
+fn parse_turn_uri(uri: &str) -> Option<SocketAddr> {
+    let uri = uri
+        .trim_start_matches("turn:")
+        .trim_start_matches("stun:")
+        .trim_start_matches("turns:");
+    let (host, port) = if let Some(idx) = uri.rfind(':') {
+        (&uri[..idx], &uri[idx + 1..])
+    } else {
+        (uri, "3478")
+    };
+    let port: u16 = port.parse().ok()?;
+    let addr: SocketAddr = format!("{}:{}", host, port).parse().ok()?;
+    Some(addr)
+}
+
+async fn check_tcp_reachable(addr: SocketAddr) -> bool {
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()
+    } else {
+        TcpSocket::new_v6()
+    };
+    match socket {
+        Ok(socket) => {
+            let connect = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                socket.connect(addr),
+            );
+            matches!(connect.await, Ok(Ok(_)))
+        }
+        Err(_) => false,
+    }
+}
+
+pub async fn health(State(state): State<AppState>) -> Json<TurnHealthResponse> {
+    let enabled = !state.config.turn.secret.is_empty();
+
+    let servers: Vec<String> = if state.config.turn.server.is_empty() {
+        vec![
+            format!("{}:3478", state.config.server.public_ip),
+            format!("{}:5349", state.config.server.public_ip),
+        ]
+    } else {
+        state
+            .config
+            .turn
+            .server
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
+    };
+
+    let mut reachable = false;
+    if enabled {
+        for server in &servers {
+            if let Some(addr) = parse_turn_uri(server) && check_tcp_reachable(addr).await {
+                reachable = true;
+                break;
+            }
+        }
+    }
+
+    Json(TurnHealthResponse {
+        enabled,
+        servers,
+        reachable,
+    })
 }

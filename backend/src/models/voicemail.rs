@@ -16,6 +16,8 @@ pub struct VoicemailBox {
     pub max_message_secs: u32,
     pub max_messages: u32,
     pub greeting_storage_key: Option<String>,
+    pub pin_hash: Option<String>,
+    pub email: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -59,6 +61,7 @@ pub struct CreateVoicemailBox {
     pub no_answer_secs: Option<u32>,
     pub max_message_secs: Option<u32>,
     pub max_messages: Option<u32>,
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +71,7 @@ pub struct UpdateVoicemailBox {
     pub max_message_secs: Option<u32>,
     pub max_messages: Option<u32>,
     pub greeting_storage_key: Option<String>,
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

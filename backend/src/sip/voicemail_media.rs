@@ -36,6 +36,7 @@ pub enum VoicemailDtmf {
     Nine,
     Pound,
     Star,
+    Digit(char),
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +314,9 @@ pub fn parse_dtmf_relay(body: &str) -> Option<VoicemailDtmf> {
             "9" => Some(VoicemailDtmf::Nine),
             "#" => Some(VoicemailDtmf::Pound),
             "*" => Some(VoicemailDtmf::Star),
+            d if d.len() == 1 && d.chars().next().unwrap().is_ascii_digit() => {
+                Some(VoicemailDtmf::Digit(d.chars().next().unwrap()))
+            }
             _ => None,
         }
     })
@@ -559,7 +563,7 @@ mod tests {
             parse_dtmf_relay("Duration=160\r\nSignal = 9\r\n"),
             Some(VoicemailDtmf::Nine)
         );
-        assert_eq!(parse_dtmf_relay("Signal=3\r\nDuration=160\r\n"), None);
+        assert_eq!(parse_dtmf_relay("Signal=3\r\nDuration=160\r\n"), Some(VoicemailDtmf::Digit('3')));
         assert_eq!(parse_dtmf_relay("Duration=160\r\n"), None);
     }
 

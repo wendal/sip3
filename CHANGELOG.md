@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [v1.8.0] - 2026-06-01
+
+### Added
+- Added **Conference PIN protection**: Conference rooms now support optional PIN authentication. PIN is provided via SIP URI parameter `sip:ext;pin=XXXX`. PINs are stored as bcrypt hashes.
+- Added **TURN health monitoring API**: `GET /api/turn/health` returns TURN server status including reachability check via TCP connection test.
+- Added **CDR auto-archive policy**: Background task automatically purges ended CDR records older than configurable threshold (default 90 days).
+- Added **API rate limiting**: In-memory sliding window rate limiter (default 1000 req/min per IP) protecting all API endpoints. Returns 429 when exceeded.
+- Added **Voicemail PIN authentication**: Voicemail boxes support optional PIN protection. Users enter PIN via DTMF before accessing messages. `#` submits PIN, `*` clears.
+- Added **Voicemail email field**: Database column and API support for email notification target per voicemail box.
+
+### Configuration
+| Parameter | Default | Description |
+|------------|---------|-------------|
+| `security.rate_limit_requests` | 1000 | Max API requests per IP per window |
+| `security.rate_limit_window_secs` | 60 | Rate limiting sliding window |
+| `cleanup.cdr_cleanup_interval_secs` | 86400 | CDR purge frequency (24h) |
+| `cleanup.cdr_archive_days` | 90 | CDR retention period in days |
+| `turn.server` | (auto) | Comma-separated TURN server URIs |
+
 ## [v1.7.0] - 2026-06-01
 
 ### Added

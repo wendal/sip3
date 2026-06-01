@@ -37,3 +37,15 @@ pub async fn mark_stale_calls_ended(
         .await?;
     Ok(result.rows_affected())
 }
+
+pub const CDR_ARCHIVE_SQL: &str = "DELETE FROM sip_calls \
+     WHERE ended_at IS NOT NULL \
+       AND ended_at < DATE_SUB(NOW(), INTERVAL ? DAY)";
+
+pub async fn purge_old_cdr_records(pool: &MySqlPool, older_than_days: i64) -> sqlx::Result<u64> {
+    let result = sqlx::query(CDR_ARCHIVE_SQL)
+        .bind(older_than_days)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}

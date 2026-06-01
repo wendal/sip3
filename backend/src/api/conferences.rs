@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
 };
 use serde_json::{Value, json};
+use bcrypt::{DEFAULT_COST, hash};
 
 use super::AppState;
 use crate::models::{
@@ -45,15 +46,29 @@ pub async fn create(
         ));
     }
 
+    let pin_hash = if let Some(pin) = &body.pin {
+        if pin.len() < 4 || pin.len() > 16 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "PIN must be between 4 and 16 characters".to_string(),
+            ));
+        }
+        Some(hash(pin, DEFAULT_COST)
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash PIN".to_string()))?)
+    } else {
+        None
+    };
+
     let result = sqlx::query(
-        "INSERT INTO sip_conference_rooms (extension, domain, name, enabled, max_participants)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO sip_conference_rooms (extension, domain, name, enabled, max_participants, pin_hash)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&body.extension)
     .bind(&domain)
     .bind(body.name.trim())
     .bind(enabled)
     .bind(max_participants)
+    .bind(&pin_hash)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -87,18 +102,36 @@ pub async fn update(
         ));
     }
 
+    let pin_hash = if let Some(pin) = &body.pin {
+        if pin.is_empty() {
+            Some(String::new())
+        } else if pin.len() < 4 || pin.len() > 16 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "PIN must be between 4 and 16 characters".to_string(),
+            ));
+        } else {
+            Some(hash(pin, DEFAULT_COST)
+                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash PIN".to_string()))?)
+        }
+    } else {
+        None
+    };
+
     let result = sqlx::query(
         "UPDATE sip_conference_rooms SET
              name             = COALESCE(?, name),
              domain           = COALESCE(?, domain),
              max_participants = COALESCE(?, max_participants),
-             enabled          = COALESCE(?, enabled)
+             enabled          = COALESCE(?, enabled),
+             pin_hash         = ?
          WHERE id = ?",
     )
     .bind(body.name.as_deref().map(str::trim))
     .bind(body.domain.as_deref())
     .bind(body.max_participants)
     .bind(body.enabled)
+    .bind(&pin_hash)
     .bind(id)
     .execute(&state.pool)
     .await

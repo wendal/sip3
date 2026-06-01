@@ -10,6 +10,7 @@ pub struct Config {
     pub security: SecurityConfig,
     pub turn: TurnConfig,
     pub cleanup: CleanupConfig,
+    pub email: EmailConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -107,6 +108,10 @@ pub struct SecurityConfig {
     pub persist_acl_bans: bool,
     /// Priority used when inserting auto-generated deny ACL rules.
     pub acl_ban_priority: i32,
+    /// Maximum API requests per IP per window. 0 = disabled.
+    pub rate_limit_requests: usize,
+    /// Sliding window in seconds for rate limiting.
+    pub rate_limit_window_secs: u64,
 }
 
 /// Configuration for the built-in TURN credentials API.
@@ -123,6 +128,22 @@ pub struct TurnConfig {
     /// Example: `turn:sip.example.com:3478,turns:sip.example.com:5349`
     /// Defaults to `turn:{server.public_ip}:3478` when empty.
     pub server: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct EmailConfig {
+    /// SMTP server hostname.
+    pub smtp_host: String,
+    /// SMTP server port.
+    pub smtp_port: u16,
+    /// SMTP username.
+    pub smtp_username: String,
+    /// SMTP password.
+    pub smtp_password: String,
+    /// From address for emails.
+    pub from_address: String,
+    /// Whether to enable TLS.
+    pub use_tls: bool,
 }
 
 /// Configuration for background cleanup tasks.
@@ -147,6 +168,11 @@ pub struct CleanupConfig {
     pub call_cleanup_interval_secs: u64,
     /// Calls older than this (hours) with no `ended_at` are considered stale.
     pub stale_call_age_hours: i64,
+    /// How often to purge archived CDR records (seconds).
+    pub cdr_cleanup_interval_secs: u64,
+    /// Ended CDR records older than this (days) are permanently purged.
+    /// Set to 0 to disable CDR auto-archive.
+    pub cdr_archive_days: i64,
 }
 
 impl Config {
@@ -203,6 +229,8 @@ impl Config {
             .set_default("security.block_secs", 900)?
             .set_default("security.persist_acl_bans", true)?
             .set_default("security.acl_ban_priority", 5)?
+            .set_default("security.rate_limit_requests", 1000)?
+            .set_default("security.rate_limit_window_secs", 60)?
             .set_default("turn.realm", "")?
             .set_default("turn.secret", "")?
             .set_default("turn.ttl_secs", 86400u64)?
@@ -216,6 +244,14 @@ impl Config {
             .set_default("cleanup.acl_refresh_interval_secs", 60)?
             .set_default("cleanup.call_cleanup_interval_secs", 300)?
             .set_default("cleanup.stale_call_age_hours", 4)?
+            .set_default("cleanup.cdr_cleanup_interval_secs", 86400)?
+            .set_default("cleanup.cdr_archive_days", 90)?
+            .set_default("email.smtp_host", "")?
+            .set_default("email.smtp_port", 587u16)?
+            .set_default("email.smtp_username", "")?
+            .set_default("email.smtp_password", "")?
+            .set_default("email.from_address", "")?
+            .set_default("email.use_tls", true)?
             .build()?;
 
         let cfg: Config = settings.try_deserialize()?;

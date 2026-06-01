@@ -23,6 +23,7 @@ pub mod auth;
 pub mod conferences;
 pub mod jwt;
 pub mod messages;
+pub mod rate_limit;
 pub mod security;
 pub mod stats;
 pub mod status;
@@ -37,6 +38,7 @@ pub struct AppState {
     /// Effective JWT signing secret (may be randomly generated at startup if not configured).
     pub jwt_secret: String,
     pub auth_guard: Arc<Mutex<SecurityGuard>>,
+    pub rate_limiter: Option<rate_limit::RateLimiter>,
 }
 
 /// Extract a Bearer token from the `Authorization` header.
@@ -125,6 +127,15 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         cfg.auth.jwt_secret.clone()
     };
 
+    let rate_limiter = if cfg.security.rate_limit_requests > 0 {
+        Some(rate_limit::RateLimiter::new(
+            cfg.security.rate_limit_requests,
+            cfg.security.rate_limit_window_secs,
+        ))
+    } else {
+        None
+    };
+
     let state = AppState {
         pool,
         config: cfg.clone(),
@@ -135,6 +146,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             user_ip_fail_threshold: cfg.security.api_user_ip_fail_threshold as usize,
             block_secs: cfg.security.block_secs,
         }))),
+        rate_limiter,
     };
 
     // JWT-only routes: caller must present a valid Bearer token; claims are injected.
@@ -206,9 +218,11 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .route("/api/health", get(health))
         .route("/api/auth/login", post(auth::login))
         .route("/api/turn/credentials", post(turn::credentials))
+        .route("/api/turn/health", get(turn::health))
         .route("/api/messages/history", post(messages::history))
         .merge(jwt_routes)
         .merge(protected)
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware))
         .layer(cors)
         .with_state(state);
 

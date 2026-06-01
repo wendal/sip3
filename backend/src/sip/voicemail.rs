@@ -4,6 +4,7 @@
 //! state.
 
 use anyhow::Result;
+use bcrypt::verify;
 use rand::Rng;
 use sqlx::MySqlPool;
 use std::collections::{HashMap, HashSet};
@@ -72,6 +73,7 @@ enum RecordingPersistenceDecision {
 
 #[derive(Debug, Clone)]
 enum VoicemailMode {
+    PinEntry { box_id: u64, mailbox: String },
     Recording { box_id: u64, mailbox: String },
     Playback {
         mailbox: String,
@@ -87,6 +89,7 @@ struct VoicemailCall {
     mode: VoicemailMode,
     caller: String,
     callee: String,
+    pin_buffer: String,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +112,7 @@ pub struct MailboxSettings {
     pub max_message_secs: u32,
     pub max_messages: u32,
     pub greeting_storage_key: Option<String>,
+    pub pin_hash: Option<String>,
 }
 
 impl Voicemail {
@@ -150,8 +154,8 @@ impl Voicemail {
         username: &str,
         domain: &str,
     ) -> Option<MailboxSettings> {
-        let row = sqlx::query_as::<_, (u64, String, String, u32, u32, u32, Option<String>)>(
-            "SELECT id, username, domain, no_answer_secs, max_message_secs, max_messages, greeting_storage_key
+        let row = sqlx::query_as::<_, (u64, String, String, u32, u32, u32, Option<String>, Option<String>)>(
+            "SELECT id, username, domain, no_answer_secs, max_message_secs, max_messages, greeting_storage_key, pin_hash
              FROM sip_voicemail_boxes
              WHERE username = ? AND domain = ? AND enabled = 1",
         )
@@ -169,6 +173,7 @@ impl Voicemail {
                 max_message_secs,
                 max_messages,
                 greeting_storage_key,
+                pin_hash,
             ))) => Some(MailboxSettings {
                 id,
                 username,
@@ -177,6 +182,7 @@ impl Voicemail {
                 max_message_secs,
                 max_messages,
                 greeting_storage_key,
+                pin_hash,
             }),
             Ok(None) => None,
             Err(e) => {
@@ -293,19 +299,30 @@ impl Voicemail {
             &negotiation,
         );
 
-        let messages = self.list_messages_for_mailbox(settings.id).await;
+        let has_pin = settings.pin_hash.is_some() && !settings.pin_hash.as_ref().unwrap().is_empty();
+
+        let mode = if has_pin {
+            VoicemailMode::PinEntry {
+                box_id: settings.id,
+                mailbox: caller.clone(),
+            }
+        } else {
+            let messages = self.list_messages_for_mailbox(settings.id).await;
+            VoicemailMode::Playback {
+                mailbox: caller.clone(),
+                box_id: settings.id,
+                messages,
+                current_index: 0,
+            }
+        };
 
         self.active.lock().await.insert(
             call_id.clone(),
             VoicemailCall {
-                mode: VoicemailMode::Playback {
-                    mailbox: caller.clone(),
-                    box_id: settings.id,
-                    messages,
-                    current_index: 0,
-                },
+                mode,
                 caller: caller.clone(),
                 callee: settings.username.clone(),
+                pin_buffer: String::new(),
             },
         );
         discard_access_candidate(&call_id, &self.access_pending, tracked_access).await;
@@ -314,7 +331,7 @@ impl Voicemail {
             self.cfg.server.voicemail_storage_dir.clone(),
         ));
 
-        if let Some(greeting_key) = settings.greeting_storage_key.clone() {
+        if !has_pin && let Some(greeting_key) = settings.greeting_storage_key.clone() {
             let play_call_id = call_id.clone();
             tokio::spawn(async move {
                 if let Err(e) = play_wav(&play_call_id, &greeting_key, &storage).await {
@@ -324,14 +341,8 @@ impl Voicemail {
         }
 
         info!(
-            "Voicemail access started for {} (call_id={}), {} messages",
-            caller, call_id,
-            self.active.lock().await.get(&call_id)
-                .map(|c| match &c.mode {
-                    VoicemailMode::Playback { messages, .. } => messages.len(),
-                    _ => 0,
-                })
-                .unwrap_or(0)
+            "Voicemail access started for {} (call_id={}), pin_required={}",
+            caller, call_id, has_pin
         );
         Ok(response)
     }
@@ -442,6 +453,7 @@ impl Voicemail {
                 },
                 caller: caller.clone(),
                 callee: callee.to_string(),
+                pin_buffer: String::new(),
             },
         );
 
@@ -703,6 +715,91 @@ impl Voicemail {
                         "Voicemail recording for {} (box {}) got {:?}",
                         mailbox, box_id, other
                     );
+                }
+                (VoicemailMode::PinEntry { .. }, VoicemailDtmf::Pound) => {
+                    let verify_result = {
+                        let mut active = self.active.lock().await;
+                        if let Some(call) = active.get_mut(&call_id) {
+                            let pin = call.pin_buffer.clone();
+                            let (box_id, mailbox) = if let VoicemailMode::PinEntry { box_id, mailbox } = &call.mode {
+                                (*box_id, mailbox.clone())
+                            } else {
+                                (0, String::new())
+                            };
+                            (Some((pin, box_id, mailbox)), call.pin_buffer.clone())
+                        } else {
+                            (None, String::new())
+                        }
+                    };
+                    if let Some((pin, box_id, mailbox)) = verify_result.0 {
+                        let pin_hash: Option<String> = sqlx::query_scalar(
+                            "SELECT pin_hash FROM sip_voicemail_boxes WHERE id = ?",
+                        )
+                        .bind(box_id)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .flatten();
+
+                        if let Some(expected_hash) = pin_hash {
+                            let valid = verify(&pin, &expected_hash).unwrap_or(false);
+                            if valid {
+                                let messages = self.list_messages_for_mailbox(box_id).await;
+                                let mut active = self.active.lock().await;
+                                if let Some(call) = active.get_mut(&call_id) {
+                                    call.mode = VoicemailMode::Playback {
+                                        mailbox,
+                                        box_id,
+                                        messages,
+                                        current_index: 0,
+                                    };
+                                    call.pin_buffer.clear();
+                                    info!("Voicemail PIN verified for box {}", box_id);
+                                }
+                                let storage = LocalVoicemailStorage::new(PathBuf::from(
+                                    self.cfg.server.voicemail_storage_dir.clone(),
+                                ));
+                                let greeting_key: Option<String> = sqlx::query_scalar(
+                                    "SELECT greeting_storage_key FROM sip_voicemail_boxes WHERE id = ?",
+                                )
+                                .bind(box_id)
+                                .fetch_optional(&self.pool)
+                                .await
+                                .ok()
+                                .flatten()
+                                .flatten();
+                                if let Some(key) = greeting_key {
+                                    let play_call_id = call_id.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = play_wav(&play_call_id, &key, &storage).await {
+                                            debug!("Voicemail greeting playback skipped/failed: {}", e);
+                                        }
+                                    });
+                                }
+                            } else {
+                                warn!("Voicemail PIN invalid for box {}", box_id);
+                                let mut active = self.active.lock().await;
+                                if let Some(call) = active.get_mut(&call_id) {
+                                    call.pin_buffer.clear();
+                                }
+                            }
+                        }
+                    }
+                }
+                (VoicemailMode::PinEntry { .. }, VoicemailDtmf::Star) => {
+                    let mut active = self.active.lock().await;
+                    if let Some(call) = active.get_mut(&call_id) {
+                        call.pin_buffer.clear();
+                    }
+                }
+                (VoicemailMode::PinEntry { .. }, digit) => {
+                    if let VoicemailDtmf::Digit(d) = digit {
+                        let mut active = self.active.lock().await;
+                        if let Some(call) = active.get_mut(&call_id) {
+                            call.pin_buffer.push(d);
+                        }
+                    }
                 }
             }
         }
@@ -1096,6 +1193,7 @@ impl Voicemail {
                     recording.callee, recording.domain, e
                 );
             }
+
             info!(
                 "Stored voicemail message for {} from {} (call_id={}, duration={}s)",
                 recording.callee, recording.caller, recording.call_id, duration_secs

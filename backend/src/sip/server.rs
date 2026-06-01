@@ -5,7 +5,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{info, warn};
 
-use super::call_cleanup::mark_stale_calls_ended;
+use super::call_cleanup::{mark_stale_calls_ended, purge_old_cdr_records};
 use super::handler::SipHandler;
 use super::tcp_server;
 use super::ws_server;
@@ -185,6 +185,30 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
                 }
                 Ok(_) => {}
                 Err(e) => warn!("Periodic call cleanup error: {}", e),
+            }
+        }
+    });
+
+    // Background task: periodically purge old ended CDR records.
+    let pool_cdr = pool.clone();
+    let cdr_interval = cfg.cleanup.cdr_cleanup_interval_secs;
+    let cdr_archive_days = cfg.cleanup.cdr_archive_days;
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(cdr_interval));
+        loop {
+            interval.tick().await;
+            if cdr_archive_days > 0 {
+                match purge_old_cdr_records(&pool_cdr, cdr_archive_days).await {
+                    Ok(n) if n > 0 => {
+                        info!(
+                            "Purged {} old CDR record(s) (>{})",
+                            n, cdr_archive_days
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!("Periodic CDR archive error: {}", e),
+                }
             }
         }
     });
