@@ -36,7 +36,7 @@ pub struct VoicemailBoxSummary {
     pub saved_count: i64,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct VoicemailMessage {
     pub id: u64,
     pub box_id: u64,
