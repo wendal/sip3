@@ -551,7 +551,7 @@ pub fn sdp_has_crypto(sdp: &str) -> bool {
 
 /// Return true if the SIP response's `CSeq` header ends with `INVITE`
 /// and a non-empty SDP body is present.
-pub fn is_invite_200_ok_with_sdp(msg: &super::handler::SipMessage) -> bool {
+pub fn is_invite_200_ok_with_sdp(msg: &super::message::SipMessage) -> bool {
     if msg.status_code != Some(200) {
         return false;
     }

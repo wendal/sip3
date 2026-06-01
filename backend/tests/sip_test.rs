@@ -11,8 +11,9 @@ mod tests {
     use sip3_backend::sip::call_cleanup::STALE_CALL_CLEANUP_SQL;
     use sip3_backend::sip::handler::{
         DialogStores, SIP_ALLOW_METHODS, SipMessage, extract_uri, md5_hex, normalize_header_name,
-        parse_auth_params, strip_proxy_via, uri_username,
+        parse_auth_params, strip_proxy_via, uri_username, uri_host, make_www_authenticate,
     };
+    use sip3_backend::sip::message::SipMessage as Msg;
     use sip3_backend::sip::media::{
         MediaRelay, SdpMediaKind, make_plain_rtp_sdp, parse_sdp_media_sections, rewrite_sdp,
         rewrite_sdp_media, sdp_audio_port, sdp_has_crypto, sdp_video_port,
@@ -26,6 +27,7 @@ mod tests {
     use sip3_backend::sip::registrar::{
         ACCOUNT_LOOKUP_SQL, generate_nonce, routable_contact_uri, validate_nonce,
     };
+    use sip3_backend::sip::response::{base_response, finalize_response, SipResponseBuilder};
     use sip3_backend::sip::transport::TransportRegistry;
     use sip3_backend::sip::voicemail::Voicemail;
     use sip3_backend::sip::voicemail_media::VoicemailMedia;
@@ -1184,5 +1186,146 @@ mod tests {
         assert!(rewritten.contains("m=audio 10000 RTP/AVP 0 8"));
         assert!(rewritten.contains("m=video 0 RTP/AVP 96"));
         assert!(rewritten.contains("a=rtpmap:96 H264/90000"));
+    }
+
+    // ── Response Builder Integration Tests ───────────────────────────────────
+
+    #[test]
+    fn test_base_response_includes_all_required_headers() {
+        let raw = "INVITE sip:1001@sip.example.com SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bKtest\r\n\
+                   From: <sip:1000@sip.example.com>;tag=from-tag\r\n\
+                   To: <sip:1001@sip.example.com>\r\n\
+                   Call-ID: base-resp-test\r\n\
+                   CSeq: 1 INVITE\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
+
+        let msg = Msg::parse(raw).expect("parse failed");
+        let response = base_response(&msg, 180, "Ringing").build();
+
+        assert!(response.starts_with("SIP/2.0 180 Ringing\r\n"));
+        assert!(response.contains("Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bKtest"));
+        assert!(response.contains("From: <sip:1000@sip.example.com>;tag=from-tag"));
+        assert!(response.contains("To: <sip:1001@sip.example.com>"));
+        assert!(response.contains("Call-ID: base-resp-test"));
+        assert!(response.contains("CSeq: 1 INVITE"));
+        assert!(response.contains("Server: SIP3/0.1.0"));
+    }
+
+    #[test]
+    fn test_base_response_handles_missing_via() {
+        let raw = "INVITE sip:1001@sip.example.com SIP/2.0\r\n\
+                   From: <sip:1000@sip.example.com>;tag=from-tag\r\n\
+                   Call-ID: missing-via-test\r\n\
+                   CSeq: 1 INVITE\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
+
+        let msg = Msg::parse(raw).expect("parse failed");
+        let response = base_response(&msg, 200, "OK").build();
+
+        assert!(response.starts_with("SIP/2.0 200 OK\r\n"));
+        assert!(response.contains("Server: SIP3/0.1.0"));
+    }
+
+    #[test]
+    fn test_finalize_response_err_returns_500_with_server_header() {
+        let raw = "INVITE sip:1001@sip.example.com SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 192.168.1.100:5060\r\n\
+                   From: <sip:1000@sip.example.com>;tag=t\r\n\
+                   To: <sip:1001@sip.example.com>\r\n\
+                   Call-ID: finalize-err-test\r\n\
+                   CSeq: 1 INVITE\r\n\
+                   Content-Length: 0\r\n\
+                   \r\n";
+
+        let msg = Msg::parse(raw).expect("parse failed");
+        let result = finalize_response(
+            &msg,
+            Err(anyhow::anyhow!("Database error")),
+            "INVITE",
+        );
+
+        let response = result.expect("result").expect("response");
+        assert!(response.starts_with("SIP/2.0 500 Internal Server Error"));
+        assert!(response.contains("Server: SIP3/0.1.0"));
+    }
+
+    #[test]
+    fn test_response_builder_chaining_with_multiple_headers() {
+        let response = SipResponseBuilder::new(200, "OK")
+            .header("Via", "SIP/2.0/UDP proxy1.com")
+            .header("Via", "SIP/2.0/UDP proxy2.com")
+            .header("Call-ID", "chaining-test")
+            .header("Server", "SIP3/0.1.0")
+            .build();
+
+        assert!(response.starts_with("SIP/2.0 200 OK\r\n"));
+        assert!(response.contains("Via: SIP/2.0/UDP proxy1.com\r\n"));
+        assert!(response.contains("Via: SIP/2.0/UDP proxy2.com\r\n"));
+        assert!(response.contains("Call-ID: chaining-test\r\n"));
+    }
+
+    // ── Auth Integration Tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_make_www_authenticate_format() {
+        let www = make_www_authenticate("test.realm", "nonce123");
+        assert!(www.starts_with("Digest "));
+        assert!(www.contains(r#"realm="test.realm""#));
+        assert!(www.contains(r#"nonce="nonce123""#));
+        assert!(www.contains("algorithm=MD5"));
+        assert!(www.contains(r#"qop="auth""#));
+    }
+
+    #[test]
+    fn test_validate_nonce_with_valid_nonce() {
+        let secret = "integration_test_secret";
+        let nonce = generate_nonce(secret);
+        assert!(validate_nonce(&nonce, secret, 300));
+    }
+
+    #[test]
+    fn test_validate_nonce_rejects_wrong_secret() {
+        let secret = "integration_test_secret";
+        let nonce = generate_nonce(secret);
+        assert!(!validate_nonce(&nonce, "wrong_secret", 300));
+    }
+
+    #[test]
+    fn test_parse_auth_params_with_quoted_comma() {
+        let auth_header = r#"Digest realm="test,realm", nonce="abc,def", uri="sip:test,test.com""#;
+        let params = parse_auth_params(auth_header);
+
+        assert_eq!(params.get("realm").map(|s| s.as_str()), Some("test,realm"));
+        assert_eq!(params.get("nonce").map(|s| s.as_str()), Some("abc,def"));
+    }
+
+    // ── URI Extraction Integration Tests ─────────────────────────────────────
+
+    #[test]
+    fn test_uri_host_extraction() {
+        let cases = vec![
+            ("sip:alice@sip.example.com", Some("sip.example.com")),
+            ("sip:bob@192.168.1.1:5060", Some("192.168.1.1:5060")),
+            ("sip:charlie@proxy.com;transport=tls", Some("proxy.com")),
+        ];
+
+        for (uri, expected) in cases {
+            assert_eq!(uri_host(uri), expected.map(|s| s.to_string()), "Failed for: {}", uri);
+        }
+    }
+
+    #[test]
+    fn test_extract_uri_from_angle_brackets_and_plain() {
+        assert_eq!(
+            extract_uri("Alice <sip:alice@sip.example.com>"),
+            Some("sip:alice@sip.example.com".to_string())
+        );
+        assert_eq!(
+            extract_uri("sip:bob@sip.example.com"),
+            Some("sip:bob@sip.example.com".to_string())
+        );
     }
 }

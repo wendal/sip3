@@ -17,7 +17,8 @@ use tracing::{debug, info, warn};
 
 use super::conference_media::ConferenceMedia;
 use super::conference_sdp::{ConferenceCodec, build_answer, negotiate_offer};
-use super::handler::{SipMessage, base_response, extract_uri, uri_username};
+use super::message::{SipMessage, extract_uri, uri_username};
+use super::response::base_response;
 use super::proxy::CALLER_ACCOUNT_EXISTS_SQL;
 use crate::config::Config;
 use crate::models::conference::validate_conference_extension;
@@ -341,8 +342,8 @@ fn base_response_with_to(
     status_code: u16,
     reason: &str,
     to_value: &str,
-) -> super::handler::SipResponseBuilder {
-    let mut builder = super::handler::SipResponseBuilder::new(status_code, reason);
+) -> super::response::SipResponseBuilder {
+    let mut builder = super::response::SipResponseBuilder::new(status_code, reason);
     for via in req.via_headers() {
         builder = builder.header("Via", via);
     }

@@ -16,3 +16,16 @@ test('accepts only 3-6 digit SIP extension usernames', () => {
 test('explains the SIP username rule clearly', () => {
   assert.equal(SIP_USERNAME_RULE_MESSAGE, 'SIP 用户名必须是 3-6 位数字分机号')
 })
+
+test('rejects usernames with special characters', () => {
+  for (const username of ['100-1', '100_1', '100.1', "100'", '100"']) {
+    assert.equal(isValidSipUsername(username), false, `${username} should be rejected`)
+  }
+})
+
+test('accepts boundary values for 3 and 6 digits', () => {
+  assert.equal(isValidSipUsername('000'), true, '000 (3 digits) should be accepted')
+  assert.equal(isValidSipUsername('000000'), true, '000000 (6 digits) should be accepted')
+  assert.equal(isValidSipUsername('999'), true, '999 (3 digits) should be accepted')
+  assert.equal(isValidSipUsername('999999'), true, '999999 (6 digits) should be accepted')
+})

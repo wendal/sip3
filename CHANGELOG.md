@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [v1.6.0] - 2026-06-01
+
+### Added
+- Added `sip/message.rs` module with `SipMessage` struct, `parse()`, header helpers, URI extraction (`extract_uri`, `uri_username`, `uri_host`), auth params parsing, MD5, and Via stripping.
+- Added `sip/response.rs` module with `SipResponseBuilder`, `base_response`, and `finalize_response` for constructing SIP responses.
+- Added `sip/errors.rs` module with custom `thiserror` types: `RegistrarError` and `ProxyError` for future error handling improvements.
+- Added `CleanupConfig` to `config.rs` with 9 configurable cleanup parameters previously hardcoded as magic numbers in `server.rs`.
+- Added 36 new unit/integration tests across backend and frontend.
+
+### Changed
+- Refactored `handler.rs` (~900 lines → ~557 lines) by extracting SIP message parsing to `message.rs` and response building to `response.rs`.
+- Extracted 9 magic numbers from `server.rs` into `CleanupConfig` for runtime configuration.
+- Updated downstream modules (voicemail, presence, conference, registrar, proxy, media, test_client) to use new import paths from `message.rs` and `response.rs`.
+- Added re-exports in `handler.rs` to maintain backward compatibility during transition.
+
+### Configuration
+The following cleanup parameters are now configurable via `config.toml` or environment variables (`SIP3__CLEANUP__*`):
+
+| Parameter | Default | Description |
+|------------|---------|-------------|
+| `max_concurrent_tasks` | 512 | Max concurrent UDP datagrams |
+| `udp_buffer_size` | 65535 | UDP receive buffer size |
+| `media_session_max_age_secs` | 7200 | Media session stale threshold (2h) |
+| `media_cleanup_interval_secs` | 60 | Media cleanup frequency |
+| `reg_cleanup_interval_secs` | 3600 | Registration cleanup (1h) |
+| `pres_cleanup_interval_secs` | 300 | Presence cleanup (5min) |
+| `acl_refresh_interval_secs` | 60 | ACL reload frequency |
+| `call_cleanup_interval_secs` | 300 | Call cleanup (5min) |
+| `stale_call_age_hours` | 4 | Stale call threshold |
+
 ## [v1.5.0] - 2026-05-17
 
 ### Added

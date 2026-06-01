@@ -15,7 +15,9 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 
-use super::handler::{DialogStores, SipMessage, base_response, extract_uri, uri_username};
+use super::handler::DialogStores;
+use super::message::{SipMessage, extract_uri, uri_username};
+use super::response::base_response;
 use super::media::MediaRelay;
 use super::proxy::{CALLER_ACCOUNT_EXISTS_SQL, build_forwarded_cancel_for_target};
 use super::transport::TransportRegistry;
@@ -1083,8 +1085,8 @@ fn base_response_with_to(
     status_code: u16,
     reason: &str,
     to_value: &str,
-) -> super::handler::SipResponseBuilder {
-    let mut builder = super::handler::SipResponseBuilder::new(status_code, reason);
+) -> super::response::SipResponseBuilder {
+    let mut builder = super::response::SipResponseBuilder::new(status_code, reason);
     for via in req.via_headers() {
         builder = builder.header("Via", via);
     }
