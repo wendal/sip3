@@ -9,6 +9,7 @@ pub struct Config {
     pub acl: AclConfig,
     pub security: SecurityConfig,
     pub turn: TurnConfig,
+    pub cleanup: CleanupConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -124,6 +125,30 @@ pub struct TurnConfig {
     pub server: String,
 }
 
+/// Configuration for background cleanup tasks.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CleanupConfig {
+    /// Maximum number of datagrams being processed concurrently.
+    /// Excess datagrams are dropped to prevent memory/CPU exhaustion under flood.
+    pub max_concurrent_tasks: usize,
+    /// UDP receive buffer size in bytes.
+    pub udp_buffer_size: usize,
+    /// Media sessions older than this (seconds) are considered stale.
+    pub media_session_max_age_secs: u64,
+    /// How often to check for stale media sessions (seconds).
+    pub media_cleanup_interval_secs: u64,
+    /// How often to purge expired registration rows from the database (seconds).
+    pub reg_cleanup_interval_secs: u64,
+    /// How often to purge expired presence subscription rows (seconds).
+    pub pres_cleanup_interval_secs: u64,
+    /// How often to reload ACL rules from the database (seconds).
+    pub acl_refresh_interval_secs: u64,
+    /// How often to close stale sip_calls rows (seconds).
+    pub call_cleanup_interval_secs: u64,
+    /// Calls older than this (hours) with no `ended_at` are considered stale.
+    pub stale_call_age_hours: i64,
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
         let settings = config::Config::builder()
@@ -182,6 +207,15 @@ impl Config {
             .set_default("turn.secret", "")?
             .set_default("turn.ttl_secs", 86400u64)?
             .set_default("turn.server", "")?
+            .set_default("cleanup.max_concurrent_tasks", 512)?
+            .set_default("cleanup.udp_buffer_size", 65535)?
+            .set_default("cleanup.media_session_max_age_secs", 7200)?
+            .set_default("cleanup.media_cleanup_interval_secs", 60)?
+            .set_default("cleanup.reg_cleanup_interval_secs", 3600)?
+            .set_default("cleanup.pres_cleanup_interval_secs", 300)?
+            .set_default("cleanup.acl_refresh_interval_secs", 60)?
+            .set_default("cleanup.call_cleanup_interval_secs", 300)?
+            .set_default("cleanup.stale_call_age_hours", 4)?
             .build()?;
 
         let cfg: Config = settings.try_deserialize()?;

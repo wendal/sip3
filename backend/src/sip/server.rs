@@ -12,32 +12,6 @@ use super::ws_server;
 use crate::acl::{AclChecker, DefaultPolicy};
 use crate::config::Config;
 
-/// Maximum number of datagrams being processed concurrently.
-/// Excess datagrams are dropped to prevent memory/CPU exhaustion under flood.
-const MAX_CONCURRENT_TASKS: usize = 512;
-
-/// Media sessions older than this are considered stale (no BYE received).
-const MEDIA_SESSION_MAX_AGE_SECS: u64 = 7200; // 2 hours
-
-/// How often to check for stale media sessions.
-const MEDIA_CLEANUP_INTERVAL_SECS: u64 = 60;
-
-/// How often to purge expired registration rows from the database.
-const REG_CLEANUP_INTERVAL_SECS: u64 = 3600; // 1 hour
-
-/// How often to purge expired presence subscription rows from the database.
-const PRES_CLEANUP_INTERVAL_SECS: u64 = 300; // 5 minutes
-
-/// How often to reload ACL rules from the database.
-const ACL_REFRESH_INTERVAL_SECS: u64 = 60;
-
-/// How often to close `sip_calls` rows whose dialog never received BYE/CANCEL.
-const CALL_CLEANUP_INTERVAL_SECS: u64 = 300; // 5 minutes
-
-/// Calls older than this with no `ended_at` are considered stale by the
-/// periodic cleanup task. Real conversations rarely run this long.
-const STALE_CALL_AGE_HOURS: i64 = 4;
-
 pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let addr = format!("{}:{}", cfg.server.sip_host, cfg.server.sip_port);
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
@@ -52,9 +26,9 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         Err(e) => warn!("Startup call cleanup failed: {}", e),
     }
 
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
+    let semaphore = Arc::new(Semaphore::new(cfg.cleanup.max_concurrent_tasks));
     let handler = SipHandler::with_socket(cfg.clone(), pool.clone(), socket.clone());
-    let mut buf = vec![0u8; 65535];
+    let mut buf = vec![0u8; cfg.cleanup.udp_buffer_size];
 
     // Mark any conference participants left active in the DB as ended; their
     // in-memory media sessions did not survive the restart.
@@ -122,14 +96,14 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     // Background task: abort stale media relay sessions (handles client crashes
     // or network failures where BYE is never received, preventing port leaks).
     let media_relay_cleanup = handler.media_relay().clone();
+    let media_max_age = cfg.cleanup.media_session_max_age_secs;
+    let media_interval = cfg.cleanup.media_cleanup_interval_secs;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-            MEDIA_CLEANUP_INTERVAL_SECS,
-        ));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(media_interval));
         loop {
             interval.tick().await;
             media_relay_cleanup
-                .cleanup_stale_sessions(MEDIA_SESSION_MAX_AGE_SECS)
+                .cleanup_stale_sessions(media_max_age)
                 .await;
         }
     });
@@ -137,22 +111,21 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     // Background task: clean up stale WebRTC sessions.
     let webrtc_gw_cleanup = handler.webrtc_gateway().clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-            MEDIA_CLEANUP_INTERVAL_SECS,
-        ));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(media_interval));
         loop {
             interval.tick().await;
             webrtc_gw_cleanup
-                .cleanup_stale_sessions(MEDIA_SESSION_MAX_AGE_SECS)
+                .cleanup_stale_sessions(media_max_age)
                 .await;
         }
     });
 
     // Background task: delete expired registration rows to keep the table tidy.
     let pool_cleanup = pool.clone();
+    let reg_interval = cfg.cleanup.reg_cleanup_interval_secs;
     tokio::spawn(async move {
         let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(REG_CLEANUP_INTERVAL_SECS));
+            tokio::time::interval(tokio::time::Duration::from_secs(reg_interval));
         loop {
             interval.tick().await;
             match sqlx::query("DELETE FROM sip_registrations WHERE expires_at < NOW()")
@@ -170,9 +143,10 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
 
     // Background task: delete expired presence subscription rows.
     let pool_pres = pool.clone();
+    let pres_interval = cfg.cleanup.pres_cleanup_interval_secs;
     tokio::spawn(async move {
         let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(PRES_CLEANUP_INTERVAL_SECS));
+            tokio::time::interval(tokio::time::Duration::from_secs(pres_interval));
         loop {
             interval.tick().await;
             match sqlx::query("DELETE FROM sip_presence_subscriptions WHERE expires_at < NOW()")
@@ -195,16 +169,18 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     // "active calls" KPI does not accumulate ghost entries from crashes,
     // network failures, or any flow where BYE/CANCEL never arrived.
     let pool_calls = pool.clone();
+    let call_interval = cfg.cleanup.call_cleanup_interval_secs;
+    let stale_call_age = cfg.cleanup.stale_call_age_hours;
     tokio::spawn(async move {
         let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(CALL_CLEANUP_INTERVAL_SECS));
+            tokio::time::interval(tokio::time::Duration::from_secs(call_interval));
         loop {
             interval.tick().await;
-            match mark_stale_calls_ended(&pool_calls, Some(STALE_CALL_AGE_HOURS)).await {
+            match mark_stale_calls_ended(&pool_calls, Some(stale_call_age)).await {
                 Ok(n) if n > 0 => {
                     info!(
                         "Closed {} stale active call(s) (>{}h old)",
-                        n, STALE_CALL_AGE_HOURS
+                        n, stale_call_age
                     );
                 }
                 Ok(_) => {}
@@ -217,9 +193,10 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let acl_refresh = Arc::clone(&acl_checker);
     let pool_acl = pool.clone();
     let acl_default = default_policy;
+    let acl_interval = cfg.cleanup.acl_refresh_interval_secs;
     tokio::spawn(async move {
         let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(ACL_REFRESH_INTERVAL_SECS));
+            tokio::time::interval(tokio::time::Duration::from_secs(acl_interval));
         loop {
             interval.tick().await;
             match AclChecker::load_from_db(&pool_acl, acl_default.clone()).await {
@@ -249,7 +226,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             Err(_) => {
                 warn!(
                     "Server overloaded ({} concurrent tasks), dropping packet from {}",
-                    MAX_CONCURRENT_TASKS, src
+                    cfg.cleanup.max_concurrent_tasks, src
                 );
                 continue;
             }
