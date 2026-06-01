@@ -44,3 +44,42 @@ test('callFailureMessage mentions camera when video permissions are denied', () 
     '浏览器未授权麦克风或摄像头，请允许相关权限后重试',
   )
 })
+
+test('callFailureMessage handles 403 forbidden status', () => {
+  assert.equal(
+    callFailureMessage({ statusCode: 403 }),
+    '当前账号无权呼叫',
+  )
+})
+
+test('callFailureMessage returns generic message for unknown status codes', () => {
+  assert.equal(
+    callFailureMessage({ statusCode: 500 }),
+    '呼叫失败：SIP 500',
+  )
+  assert.equal(
+    callFailureMessage({ statusCode: 503 }),
+    '呼叫失败：SIP 503',
+  )
+})
+
+test('callFailureMessage returns message property when present', () => {
+  assert.equal(
+    callFailureMessage({ message: 'Specific error message' }),
+    'Specific error message',
+  )
+})
+
+test('callFailureMessage handles error with both message and name properties', () => {
+  const error = {
+    name: 'UnknownError',
+    message: 'Device error occurred',
+  }
+  assert.equal(callFailureMessage(error), 'Device error occurred')
+})
+
+test('callFailureMessage returns generic failure when no recognizable error', () => {
+  assert.equal(callFailureMessage({}), '呼叫失败')
+  assert.equal(callFailureMessage(null), '呼叫失败')
+  assert.equal(callFailureMessage(undefined), '呼叫失败')
+})

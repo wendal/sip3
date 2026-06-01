@@ -7,10 +7,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use super::handler::{
-    SipMessage, base_response, extract_uri, make_www_authenticate, md5_hex, parse_auth_params,
-    uri_username,
+use super::message::{
+    SipMessage, extract_uri, make_www_authenticate, md5_hex, parse_auth_params, uri_username,
 };
+use super::response::base_response;
 use super::presence::{Presence, PresenceStatus};
 use crate::config::Config;
 use crate::security_guard::{

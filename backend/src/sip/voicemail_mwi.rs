@@ -6,7 +6,8 @@ use std::sync::{Arc, OnceLock};
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
-use super::handler::{SipMessage, SipResponseBuilder, base_response, extract_uri, uri_username};
+use super::message::{SipMessage, extract_uri, uri_username};
+use super::response::{SipResponseBuilder, base_response};
 use crate::config::Config;
 
 static MWI_NOTIFIER: OnceLock<VoicemailMwi> = OnceLock::new();
