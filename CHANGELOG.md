@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [v1.7.0] - 2026-06-01
+
+### Added
+- Added **busy-to-voicemail routing**: When a registered callee responds to INVITE with 486/600/603 (Busy), the call is routed to voicemail if the callee has an enabled voicemail box. The original INVITE is stored and replayed to the voicemail endpoint.
+- Added **voicemail IVR playback navigation**: DTMF controls during `*97` voicemail access:
+  - `1` - Play previous message
+  - `2` - Play next message
+  - `#` - Play next message (standard voicemail behavior)
+  - `7` - Delete current message (updates DB, sends MWI notification)
+  - `9` - Save current message (updates DB, sends MWI notification)
+
+### Changed
+- Expanded `VoicemailMode::Playback` to track message list and current index for IVR navigation
+- Added `list_messages_for_mailbox()` to load new/saved messages on voicemail access
+- `VoicemailMessage` model now derives `Clone` for in-memory state management
+
 ## [v1.6.0] - 2026-06-01
 
 ### Added
