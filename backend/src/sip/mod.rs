@@ -1,5 +1,6 @@
 pub mod call_cleanup;
 pub mod conference;
+pub mod errors;
 pub mod conference_media;
 pub mod conference_sdp;
 pub mod g711;
