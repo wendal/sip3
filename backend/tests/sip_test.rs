@@ -906,6 +906,7 @@ mod tests {
             DialogStores {
                 pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
                 active: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                pending_invites: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             },
             MediaRelay::new(
                 cfg.server.public_ip.clone(),

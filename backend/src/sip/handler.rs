@@ -31,6 +31,10 @@ pub use super::response::{base_response, finalize_response, SipResponseBuilder};
 /// provisional/final responses from the callee back to the caller.
 pub type PendingDialogs = Arc<tokio::sync::Mutex<HashMap<String, SocketAddr>>>;
 
+/// Shared map from SIP Call-ID to the original INVITE message, used for
+/// busy-to-voicemail when the callee responds with 486/600/603.
+pub type PendingInvites = Arc<tokio::sync::Mutex<HashMap<String, SipMessage>>>;
+
 /// State for an established SIP dialog (post-ACK), used to route in-dialog
 /// requests (BYE, INFO) in both directions.
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +52,7 @@ pub type ActiveDialogs = Arc<tokio::sync::Mutex<HashMap<String, DialogInfo>>>;
 pub struct DialogStores {
     pub pending: PendingDialogs,
     pub active: ActiveDialogs,
+    pub pending_invites: PendingInvites,
 }
 
 #[derive(Clone)]
@@ -58,6 +63,7 @@ pub struct SipHandler {
     proxy: Proxy,
     pending_dialogs: PendingDialogs,
     active_dialogs: ActiveDialogs,
+    pending_invites: PendingInvites,
     media_relay: MediaRelay,
     presence: Presence,
     webrtc_gateway: Arc<WebRtcGateway>,
@@ -70,9 +76,11 @@ impl SipHandler {
     pub fn with_socket(cfg: Config, pool: MySqlPool, socket: Arc<UdpSocket>) -> Self {
         let pending_dialogs: PendingDialogs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let active_dialogs: ActiveDialogs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_invites: PendingInvites = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let dialog_stores = DialogStores {
             pending: pending_dialogs.clone(),
             active: active_dialogs.clone(),
+            pending_invites: pending_invites.clone(),
         };
         let transport_registry = TransportRegistry::default();
         let media_relay = MediaRelay::new(
@@ -135,6 +143,7 @@ impl SipHandler {
             proxy,
             pending_dialogs,
             active_dialogs,
+            pending_invites,
             media_relay,
             presence,
             webrtc_gateway,
@@ -212,7 +221,12 @@ impl SipHandler {
                     msg.cseq().unwrap_or(""),
                     src
                 );
-                // SIP response from callee — relay back to the original caller.
+                let status = msg.status_code.unwrap_or(0);
+                if matches!(status, 486 | 600 | 603)
+                    && let Some(response) = self.handle_busy_to_voicemail(&msg, src).await?
+                {
+                    return Ok(Some(response));
+                }
                 self.relay_response(&msg).await;
                 return Ok(None);
             }
@@ -469,6 +483,76 @@ impl SipHandler {
             .header("Allow", SIP_ALLOW_METHODS)
             .header("Accept", "application/sdp, text/plain")
             .build())
+    }
+
+    /// Intercept busy responses (486/600/603) and route to voicemail if the callee
+    /// has an enabled voicemail box. Returns the voicemail response to send to the
+    /// caller, or None if busy-to-voicemail does not apply.
+    async fn handle_busy_to_voicemail(
+        &self,
+        msg: &SipMessage,
+        _src: SocketAddr,
+    ) -> Result<Option<String>> {
+        let call_id = match msg.call_id() {
+            Some(id) => id.to_string(),
+            None => return Ok(None),
+        };
+
+        let callee = match msg
+            .to_header()
+            .and_then(extract_uri)
+            .and_then(|uri| uri_username(&uri))
+        {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        let domain = self.cfg.server.sip_domain.clone();
+
+        let Some(_mailbox) = self.voicemail.lookup_enabled_box(&callee, &domain).await else {
+            return Ok(None);
+        };
+
+        let original_invite = match self.pending_invites.lock().await.remove(&call_id) {
+            Some(invite) => invite,
+            None => {
+                debug!("No pending invite for {} to do busy-to-voicemail", call_id);
+                return Ok(None);
+            }
+        };
+
+        self.voicemail.cancel_no_answer_timer(&call_id).await;
+        self.pending_dialogs.lock().await.remove(&call_id);
+        self.active_dialogs.lock().await.remove(&call_id);
+        self.media_relay.remove_session(&call_id).await;
+        self.webrtc_gateway.remove_session(&call_id).await;
+
+        let caller_addr = {
+            let dialogs = self.pending_dialogs.lock().await;
+            dialogs.get(&call_id).copied()
+        };
+
+        let Some(caller_addr) = caller_addr else {
+            debug!("No caller address for {} in busy-to-voicemail", call_id);
+            return Ok(None);
+        };
+
+        info!(
+            "Busy-to-voicemail: routing call {} from {} to voicemail for {}",
+            call_id, caller_addr, callee
+        );
+
+        match self
+            .voicemail
+            .handle_delivery_invite(&original_invite, caller_addr, &callee)
+            .await
+        {
+            Ok(response) => Ok(Some(response)),
+            Err(e) => {
+                warn!("Failed to build voicemail response for {}: {}", call_id, e);
+                Ok(None)
+            }
+        }
     }
 }
 

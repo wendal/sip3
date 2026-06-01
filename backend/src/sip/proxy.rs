@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
-use super::handler::{ActiveDialogs, DialogInfo, DialogStores, PendingDialogs};
+use super::handler::{ActiveDialogs, DialogInfo, DialogStores, PendingDialogs, PendingInvites};
 use super::message::{SipMessage, extract_uri, md5_hex, uri_username};
 use super::response::base_response;
 use super::media::{
@@ -158,6 +158,8 @@ pub struct Proxy {
     socket: Arc<UdpSocket>,
     /// Shared map of call-id → caller's SocketAddr for response relay.
     pending_dialogs: PendingDialogs,
+    /// Shared map of call-id → original INVITE message, used for busy-to-voicemail.
+    pending_invites: PendingInvites,
     media_relay: MediaRelay,
     /// Established dialogs (post-ACK): call-id → (caller_addr, callee_addr).
     /// Used for bidirectional BYE/INFO routing.
@@ -186,6 +188,7 @@ impl Proxy {
             cfg,
             socket,
             pending_dialogs: dialog_stores.pending,
+            pending_invites: dialog_stores.pending_invites,
             media_relay,
             active_dialogs: dialog_stores.active,
             webrtc_gateway,
@@ -306,6 +309,12 @@ impl Proxy {
         {
             let mut dialogs = self.pending_dialogs.lock().await;
             dialogs.insert(call_id.clone(), src);
+        }
+
+        // Store the original INVITE for busy-to-voicemail handling.
+        {
+            let mut invites = self.pending_invites.lock().await;
+            invites.insert(call_id.clone(), msg.clone());
         }
 
         // Store dialog endpoints for bidirectional routing of subsequent requests.
@@ -442,6 +451,7 @@ impl Proxy {
                     DialogStores {
                         pending: self.pending_dialogs.clone(),
                         active: self.active_dialogs.clone(),
+                        pending_invites: self.pending_invites.clone(),
                     },
                     self.media_relay.clone(),
                     self.webrtc_gateway.clone(),
