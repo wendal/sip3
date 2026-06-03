@@ -33,6 +33,7 @@ pub struct Metrics {
 
     // Background workers
     pub email_outbox_pending: IntGauge,
+    pub email_outbox_sent: IntCounter,
     pub webhook_deliveries_total: IntCounterVec,
     pub rtp_relay_sessions_active: IntGauge,
 
@@ -99,6 +100,12 @@ fn build() -> &'static Metrics {
     ))
     .expect("gauge");
 
+    let email_outbox_sent = IntCounter::with_opts(Opts::new(
+        "sip3_email_outbox_sent_total",
+        "Total emails successfully sent by the outbox worker",
+    ))
+    .expect("counter");
+
     let webhook_deliveries_total = IntCounterVec::new(
         Opts::new(
             "sip3_webhook_deliveries_total",
@@ -129,6 +136,7 @@ fn build() -> &'static Metrics {
         Box::new(auto_bans_active.clone()),
         Box::new(rate_limit_hits_total.clone()),
         Box::new(email_outbox_pending.clone()),
+        Box::new(email_outbox_sent.clone()),
         Box::new(webhook_deliveries_total.clone()),
         Box::new(rtp_relay_sessions_active.clone()),
         Box::new(config_reload_count.clone()),
@@ -147,6 +155,7 @@ fn build() -> &'static Metrics {
         auto_bans_active,
         rate_limit_hits_total,
         email_outbox_pending,
+        email_outbox_sent,
         webhook_deliveries_total,
         rtp_relay_sessions_active,
         config_reload_count,
@@ -214,6 +223,10 @@ pub fn set_active_calls(count: i64) {
 
 pub fn set_email_outbox_pending(count: i64) {
     global().email_outbox_pending.set(count);
+}
+
+pub fn inc_email_outbox_sent() {
+    global().email_outbox_sent.inc();
 }
 
 pub fn set_rtp_relay_sessions_active(count: i64) {

@@ -32,12 +32,15 @@ pub async fn list_boxes(
         "SELECT
             b.id, b.username, b.domain, b.enabled,
             b.no_answer_secs, b.max_message_secs, b.max_messages,
+            b.email,
+            (CASE WHEN b.greeting_storage_key IS NOT NULL THEN 1 ELSE 0 END) AS has_greeting,
             COALESCE(SUM(CASE WHEN m.status = 'new' THEN 1 ELSE 0 END), 0) AS new_count,
             COALESCE(SUM(CASE WHEN m.status = 'saved' THEN 1 ELSE 0 END), 0) AS saved_count
          FROM sip_voicemail_boxes b
          LEFT JOIN sip_voicemail_messages m ON b.id = m.box_id
          GROUP BY b.id, b.username, b.domain, b.enabled,
-                  b.no_answer_secs, b.max_message_secs, b.max_messages
+                  b.no_answer_secs, b.max_message_secs, b.max_messages,
+                  b.email, b.greeting_storage_key
          ORDER BY b.username, b.domain",
     )
     .fetch_all(&state.pool)
@@ -166,7 +169,8 @@ pub async fn update_box(
              no_answer_secs    = COALESCE(?, no_answer_secs),
              max_message_secs  = COALESCE(?, max_message_secs),
              max_messages      = COALESCE(?, max_messages),
-             greeting_storage_key = COALESCE(?, greeting_storage_key)
+             greeting_storage_key = COALESCE(?, greeting_storage_key),
+             email             = COALESCE(?, email)
          WHERE id = ?",
     )
     .bind(body.enabled)
@@ -174,6 +178,7 @@ pub async fn update_box(
     .bind(body.max_message_secs)
     .bind(body.max_messages)
     .bind(body.greeting_storage_key.as_deref())
+    .bind(body.email.as_deref())
     .bind(id)
     .execute(&state.pool)
     .await
@@ -380,4 +385,181 @@ async fn notify_message_owner(state: &AppState, message_id: u64) {
             username, domain, e
         ),
     }
+}
+
+// ------------------------------------------------------------------
+// Greeting upload / download / delete
+// ------------------------------------------------------------------
+
+use axum::extract::Multipart;
+
+/// `POST /api/voicemail/boxes/:id/greeting` — multipart upload, field `file`.
+/// Accepts a 8kHz mono PCM16 WAV up to 60s. Stores it on disk via
+/// `LocalVoicemailStorage` and updates `sip_voicemail_boxes.greeting_storage_key`.
+pub async fn upload_greeting(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    // 1. Find the box and get its (username, domain) for storage keying.
+    let box_row: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT username, domain, greeting_storage_key FROM sip_voicemail_boxes WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (username, domain, prev_key) =
+        box_row.ok_or_else(|| (StatusCode::NOT_FOUND, "Voicemail box not found".to_string()))?;
+
+    // 2. Read the file field.
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut original_filename: Option<String> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("multipart: {e}")))?
+    {
+        if field.name() == Some("file") {
+            original_filename = field.file_name().map(|s| s.to_string());
+            file_bytes = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|e| (StatusCode::BAD_REQUEST, format!("read field: {e}")))?
+                    .to_vec(),
+            );
+        }
+    }
+    let bytes =
+        file_bytes.ok_or_else(|| (StatusCode::BAD_REQUEST, "missing 'file' field".to_string()))?;
+
+    // 3. Validate: must be a decodable mono PCM-16 WAV with duration <= 60s.
+    let decoded = crate::storage::voicemail::read_pcm16_wav(&bytes).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("not a valid PCM16 WAV: {e}"),
+        )
+    })?;
+    let sample_rate = decoded.sample_rate as u32;
+    if sample_rate != 8000 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "greeting must be 8kHz mono PCM16 WAV".to_string(),
+        ));
+    }
+    let duration_secs = decoded.samples.len() as u32 / sample_rate;
+    if duration_secs == 0 || duration_secs > 60 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "greeting duration must be between 1 and 60 seconds".to_string(),
+        ));
+    }
+
+    // 4. Persist on disk. Reuse LocalVoicemailStorage::write_message by
+    //    passing a synthetic call_id of "greeting" so the file lands at
+    //    `<root>/<sanitized-username>/greeting-<uuid>.wav`.
+    let storage_dir = state.config.load().server.voicemail_storage_dir.clone();
+    let storage = LocalVoicemailStorage::new(PathBuf::from(storage_dir));
+    let storage_key = storage
+        .write_message(&username, "greeting", &bytes)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}")))?;
+
+    // 5. Remove the previous file (best-effort).
+    if let Some(prev) = prev_key.as_deref() {
+        let _ = storage.delete(prev).await;
+    }
+
+    // 6. Update DB row + insert history entry.
+    sqlx::query("UPDATE sip_voicemail_boxes SET greeting_storage_key = ? WHERE id = ?")
+        .bind(&storage_key)
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    sqlx::query(
+        "INSERT INTO sip_voicemail_greetings
+           (box_id, storage_key, original_filename, duration_secs)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(&storage_key)
+    .bind(original_filename.unwrap_or_else(|| "greeting.wav".to_string()))
+    .bind(duration_secs)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(json!({
+        "id": id,
+        "username": username,
+        "domain": domain,
+        "storage_key": storage_key,
+        "duration_secs": duration_secs,
+    })))
+}
+
+/// `GET /api/voicemail/boxes/:id/greeting` — stream the WAV blob.
+pub async fn download_greeting(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<Response, (StatusCode, String)> {
+    let row: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT username, domain, greeting_storage_key FROM sip_voicemail_boxes WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (_username, _domain, key) =
+        row.ok_or_else(|| (StatusCode::NOT_FOUND, "Voicemail box not found".to_string()))?;
+    let key = key.ok_or_else(|| (StatusCode::NOT_FOUND, "No greeting uploaded".to_string()))?;
+
+    let storage_dir = state.config.load().server.voicemail_storage_dir.clone();
+    let storage = LocalVoicemailStorage::new(PathBuf::from(storage_dir));
+    let bytes = storage
+        .read(&key)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("greeting missing: {e}")))?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"greeting-{}.wav\"", id),
+        )
+        .body(Body::from(bytes))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// `DELETE /api/voicemail/boxes/:id/greeting` — clear the box's greeting.
+pub async fn delete_greeting(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT greeting_storage_key FROM sip_voicemail_boxes WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let key = row
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Voicemail box not found".to_string()))?
+        .0;
+
+    if let Some(key) = key {
+        let storage_dir = state.config.load().server.voicemail_storage_dir.clone();
+        let storage = LocalVoicemailStorage::new(PathBuf::from(storage_dir));
+        let _ = storage.delete(&key).await;
+    }
+    sqlx::query("UPDATE sip_voicemail_boxes SET greeting_storage_key = NULL WHERE id = ?")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(json!({ "id": id, "message": "Greeting cleared" })))
 }

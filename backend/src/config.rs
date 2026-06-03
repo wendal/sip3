@@ -53,6 +53,11 @@ pub struct ServerConfig {
     pub voicemail_idle_timeout_secs: u32,
     pub voicemail_storage_dir: String,
     pub voicemail_prompt_dir: String,
+    /// Language code for system prompts (e.g. "en", "zh"). System prompts
+    /// are loaded from `<voicemail_prompt_dir>/<lang>/<name>.wav`. Per-mailbox
+    /// uploaded greetings (see VoicemailBox.greeting_storage_key) override
+    /// any system prompt.
+    pub voicemail_prompt_lang: String,
     pub voicemail_rtp_port_min: u16,
     pub voicemail_rtp_port_max: u16,
 }
@@ -208,6 +213,7 @@ impl Config {
             .set_default("server.voicemail_idle_timeout_secs", 10)?
             .set_default("server.voicemail_storage_dir", "voicemail")?
             .set_default("server.voicemail_prompt_dir", "voicemail/prompts")?
+            .set_default("server.voicemail_prompt_lang", "en")?
             .set_default("server.voicemail_rtp_port_min", 10200)?
             .set_default("server.voicemail_rtp_port_max", 10299)?
             .set_default("database.url", "mysql://root:root@localhost:3306/sip3")?

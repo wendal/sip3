@@ -52,6 +52,8 @@ pub struct AppState {
     pub config_watcher: Arc<ConfigWatcher>,
     /// Webhook outbox dispatcher; enqueue from anywhere, drain from background.
     pub webhook_dispatcher: Arc<WebhookDispatcher>,
+    /// Background SMTP outbox worker.
+    pub email_worker: Arc<crate::api::email_worker::EmailWorker>,
 }
 
 /// Extract a Bearer token from the `Authorization` header.
@@ -157,7 +159,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
 
     let state = AppState {
         pool: pool.clone(),
-        config: config_arc,
+        config: config_arc.clone(),
         jwt_secret,
         auth_guard: Arc::new(Mutex::new(SecurityGuard::new(GuardLimits {
             window_secs: cfg.security.window_secs,
@@ -167,7 +169,11 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         }))),
         rate_limiter,
         config_watcher: config_watcher.clone(),
-        webhook_dispatcher: Arc::new(WebhookDispatcher::new(pool)),
+        webhook_dispatcher: Arc::new(WebhookDispatcher::new(pool.clone())),
+        email_worker: Arc::new(crate::api::email_worker::EmailWorker::new(
+            pool.clone(),
+            config_arc.clone(),
+        )),
     };
 
     // Spawn the periodic config reload task. It reloads from
@@ -233,6 +239,12 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             get(voicemail::list_boxes).post(voicemail::create_box),
         )
         .route("/api/voicemail/boxes/:id", put(voicemail::update_box))
+        .route(
+            "/api/voicemail/boxes/:id/greeting",
+            post(voicemail::upload_greeting)
+                .get(voicemail::download_greeting)
+                .delete(voicemail::delete_greeting),
+        )
         .route("/api/voicemail/messages", get(voicemail::list_messages))
         .route(
             "/api/voicemail/messages/:id",

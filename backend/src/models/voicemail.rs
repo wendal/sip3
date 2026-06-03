@@ -34,6 +34,8 @@ pub struct VoicemailBoxSummary {
     pub no_answer_secs: u32,
     pub max_message_secs: u32,
     pub max_messages: u32,
+    pub email: Option<String>,
+    pub has_greeting: i8,
     pub new_count: i64,
     pub saved_count: i64,
 }
