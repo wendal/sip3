@@ -1,5 +1,5 @@
-use anyhow::Result;
 use super::message::SipMessage;
+use anyhow::Result;
 
 pub struct SipResponseBuilder {
     status_code: u16,
@@ -188,11 +188,7 @@ mod tests {
                    \r\n";
 
         let req = parse_request(raw);
-        let result = finalize_response(
-            &req,
-            Err(anyhow::anyhow!("Database error")),
-            "REGISTER",
-        );
+        let result = finalize_response(&req, Err(anyhow::anyhow!("Database error")), "REGISTER");
 
         assert!(result.is_ok());
         let response = result.unwrap().unwrap();
@@ -213,10 +209,15 @@ mod tests {
     #[test]
     fn test_response_builder_with_special_chars_in_header() {
         let response = SipResponseBuilder::new(200, "OK")
-            .header("WWW-Authenticate", r#"Digest realm="test\"realm", nonce="abc123""#)
+            .header(
+                "WWW-Authenticate",
+                r#"Digest realm="test\"realm", nonce="abc123""#,
+            )
             .build();
 
-        assert!(response.contains(r#"WWW-Authenticate: Digest realm="test\"realm", nonce="abc123""#));
+        assert!(
+            response.contains(r#"WWW-Authenticate: Digest realm="test\"realm", nonce="abc123""#)
+        );
     }
 
     #[test]
@@ -269,11 +270,7 @@ mod tests {
                    \r\n";
 
         let req = parse_request(raw);
-        let result = finalize_response(
-            &req,
-            Err(anyhow::anyhow!("Error")),
-            "REGISTER",
-        );
+        let result = finalize_response(&req, Err(anyhow::anyhow!("Error")), "REGISTER");
 
         let response = result.unwrap().unwrap();
         assert!(response.contains("Server: SIP3/0.1.0"));

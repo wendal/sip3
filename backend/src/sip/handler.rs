@@ -24,8 +24,11 @@ use crate::config::Config;
 use crate::security_guard::{GuardLimits, SecurityGuard};
 
 pub use super::message::SIP_ALLOW_METHODS;
-pub use super::message::{extract_uri, make_www_authenticate, md5_hex, normalize_header_name, parse_auth_params, strip_proxy_via, uri_username, uri_host, SipMessage};
-pub use super::response::{base_response, finalize_response, SipResponseBuilder};
+pub use super::message::{
+    SipMessage, extract_uri, make_www_authenticate, md5_hex, normalize_header_name,
+    parse_auth_params, strip_proxy_via, uri_host, uri_username,
+};
+pub use super::response::{SipResponseBuilder, base_response, finalize_response};
 
 /// Shared map from SIP Call-ID to the caller's address, used to relay
 /// provisional/final responses from the callee back to the caller.

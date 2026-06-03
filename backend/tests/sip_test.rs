@@ -10,14 +10,14 @@ mod tests {
     };
     use sip3_backend::sip::call_cleanup::STALE_CALL_CLEANUP_SQL;
     use sip3_backend::sip::handler::{
-        DialogStores, SIP_ALLOW_METHODS, SipMessage, extract_uri, md5_hex, normalize_header_name,
-        parse_auth_params, strip_proxy_via, uri_username, uri_host, make_www_authenticate,
+        DialogStores, SIP_ALLOW_METHODS, SipMessage, extract_uri, make_www_authenticate, md5_hex,
+        normalize_header_name, parse_auth_params, strip_proxy_via, uri_host, uri_username,
     };
-    use sip3_backend::sip::message::SipMessage as Msg;
     use sip3_backend::sip::media::{
         MediaRelay, SdpMediaKind, make_plain_rtp_sdp, parse_sdp_media_sections, rewrite_sdp,
         rewrite_sdp_media, sdp_audio_port, sdp_has_crypto, sdp_video_port,
     };
+    use sip3_backend::sip::message::SipMessage as Msg;
     use sip3_backend::sip::proxy::{
         CALLER_ACCOUNT_EXISTS_SQL, MESSAGE_SENDER_ACCOUNT_EXISTS_SQL, Proxy,
         build_forwarded_cancel_for_target, build_forwarded_invite_for_target,
@@ -27,7 +27,7 @@ mod tests {
     use sip3_backend::sip::registrar::{
         ACCOUNT_LOOKUP_SQL, generate_nonce, routable_contact_uri, validate_nonce,
     };
-    use sip3_backend::sip::response::{base_response, finalize_response, SipResponseBuilder};
+    use sip3_backend::sip::response::{SipResponseBuilder, base_response, finalize_response};
     use sip3_backend::sip::transport::TransportRegistry;
     use sip3_backend::sip::voicemail::Voicemail;
     use sip3_backend::sip::voicemail_media::VoicemailMedia;
@@ -1242,11 +1242,7 @@ mod tests {
                    \r\n";
 
         let msg = Msg::parse(raw).expect("parse failed");
-        let result = finalize_response(
-            &msg,
-            Err(anyhow::anyhow!("Database error")),
-            "INVITE",
-        );
+        let result = finalize_response(&msg, Err(anyhow::anyhow!("Database error")), "INVITE");
 
         let response = result.expect("result").expect("response");
         assert!(response.starts_with("SIP/2.0 500 Internal Server Error"));
@@ -1314,7 +1310,12 @@ mod tests {
         ];
 
         for (uri, expected) in cases {
-            assert_eq!(uri_host(uri), expected.map(|s| s.to_string()), "Failed for: {}", uri);
+            assert_eq!(
+                uri_host(uri),
+                expected.map(|s| s.to_string()),
+                "Failed for: {}",
+                uri
+            );
         }
     }
 

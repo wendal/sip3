@@ -11,6 +11,11 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Initialize the global Prometheus registry before any worker that may
+    // emit a metric.
+    api::metrics::init();
+    info!("Prometheus metrics registry initialized");
+
     let cfg = config::Config::load()?;
     info!(
         "Configuration loaded, SIP domain: {}",

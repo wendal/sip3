@@ -1,8 +1,8 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha1::Sha1;
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,7 +29,7 @@ pub async fn credentials(
     State(state): State<AppState>,
     Json(body): Json<TurnCredentialsRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let secret = &state.config.turn.secret;
+    let secret = &state.config.load().turn.secret;
     if secret.is_empty() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -45,10 +45,10 @@ pub async fn credentials(
     }
 
     // Determine realm: turn.realm overrides auth.realm.
-    let realm = if state.config.turn.realm.is_empty() {
-        state.config.auth.realm.clone()
+    let realm = if state.config.load().turn.realm.is_empty() {
+        state.config.load().auth.realm.clone()
     } else {
-        state.config.turn.realm.clone()
+        state.config.load().turn.realm.clone()
     };
 
     // Verify SIP credentials by comparing against the stored HA1 hash.
@@ -80,20 +80,27 @@ pub async fn credentials(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let expires = now + state.config.turn.ttl_secs;
+    let expires = now + state.config.load().turn.ttl_secs;
     let turn_username = format!("{}:{}", expires, body.username);
     let turn_password = hmac_sha1_base64(secret, &turn_username);
 
     // Build the list of TURN URIs.
-    let uris: Vec<String> = if state.config.turn.server.is_empty() {
+    let uris: Vec<String> = if state.config.load().turn.server.is_empty() {
         vec![
-            format!("stun:{}:3478", state.config.server.public_ip),
-            format!("turn:{}:3478?transport=udp", state.config.server.public_ip),
-            format!("turn:{}:3478?transport=tcp", state.config.server.public_ip),
+            format!("stun:{}:3478", state.config.load().server.public_ip),
+            format!(
+                "turn:{}:3478?transport=udp",
+                state.config.load().server.public_ip
+            ),
+            format!(
+                "turn:{}:3478?transport=tcp",
+                state.config.load().server.public_ip
+            ),
         ]
     } else {
         state
             .config
+            .load()
             .turn
             .server
             .split(',')
@@ -104,7 +111,7 @@ pub async fn credentials(
     Ok(Json(json!({
         "username": turn_username,
         "password": turn_password,
-        "ttl": state.config.turn.ttl_secs,
+        "ttl": state.config.load().turn.ttl_secs,
         "uris": uris,
     })))
 }
@@ -146,10 +153,8 @@ async fn check_tcp_reachable(addr: SocketAddr) -> bool {
     };
     match socket {
         Ok(socket) => {
-            let connect = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                socket.connect(addr),
-            );
+            let connect =
+                tokio::time::timeout(std::time::Duration::from_secs(2), socket.connect(addr));
             matches!(connect.await, Ok(Ok(_)))
         }
         Err(_) => false,
@@ -157,16 +162,17 @@ async fn check_tcp_reachable(addr: SocketAddr) -> bool {
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<TurnHealthResponse> {
-    let enabled = !state.config.turn.secret.is_empty();
+    let enabled = !state.config.load().turn.secret.is_empty();
 
-    let servers: Vec<String> = if state.config.turn.server.is_empty() {
+    let servers: Vec<String> = if state.config.load().turn.server.is_empty() {
         vec![
-            format!("{}:3478", state.config.server.public_ip),
-            format!("{}:5349", state.config.server.public_ip),
+            format!("{}:3478", state.config.load().server.public_ip),
+            format!("{}:5349", state.config.load().server.public_ip),
         ]
     } else {
         state
             .config
+            .load()
             .turn
             .server
             .split(',')
@@ -177,7 +183,9 @@ pub async fn health(State(state): State<AppState>) -> Json<TurnHealthResponse> {
     let mut reachable = false;
     if enabled {
         for server in &servers {
-            if let Some(addr) = parse_turn_uri(server) && check_tcp_reachable(addr).await {
+            if let Some(addr) = parse_turn_uri(server)
+                && check_tcp_reachable(addr).await
+            {
                 reachable = true;
                 break;
             }

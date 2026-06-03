@@ -125,6 +125,7 @@ impl SecurityGuard {
                     username: username.map(|s| s.to_string()),
                 },
             );
+            crate::api::metrics::set_auto_bans_active(self.blocks.len() as i64);
             return true;
         }
 
@@ -140,6 +141,7 @@ impl SecurityGuard {
 
     pub fn unblock(&mut self, ip: &str) {
         self.blocks.remove(ip);
+        crate::api::metrics::set_auto_bans_active(self.blocks.len() as i64);
     }
 
     pub fn list_active_blocks(&mut self) -> Vec<ActiveBlock> {

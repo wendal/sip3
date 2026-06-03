@@ -124,8 +124,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let pool_cleanup = pool.clone();
     let reg_interval = cfg.cleanup.reg_cleanup_interval_secs;
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(reg_interval));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(reg_interval));
         loop {
             interval.tick().await;
             match sqlx::query("DELETE FROM sip_registrations WHERE expires_at < NOW()")
@@ -145,8 +144,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let pool_pres = pool.clone();
     let pres_interval = cfg.cleanup.pres_cleanup_interval_secs;
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(pres_interval));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(pres_interval));
         loop {
             interval.tick().await;
             match sqlx::query("DELETE FROM sip_presence_subscriptions WHERE expires_at < NOW()")
@@ -172,8 +170,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let call_interval = cfg.cleanup.call_cleanup_interval_secs;
     let stale_call_age = cfg.cleanup.stale_call_age_hours;
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(call_interval));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(call_interval));
         loop {
             interval.tick().await;
             match mark_stale_calls_ended(&pool_calls, Some(stale_call_age)).await {
@@ -194,17 +191,13 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let cdr_interval = cfg.cleanup.cdr_cleanup_interval_secs;
     let cdr_archive_days = cfg.cleanup.cdr_archive_days;
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(cdr_interval));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(cdr_interval));
         loop {
             interval.tick().await;
             if cdr_archive_days > 0 {
                 match purge_old_cdr_records(&pool_cdr, cdr_archive_days).await {
                     Ok(n) if n > 0 => {
-                        info!(
-                            "Purged {} old CDR record(s) (>{})",
-                            n, cdr_archive_days
-                        );
+                        info!("Purged {} old CDR record(s) (>{})", n, cdr_archive_days);
                     }
                     Ok(_) => {}
                     Err(e) => warn!("Periodic CDR archive error: {}", e),
@@ -219,8 +212,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     let acl_default = default_policy;
     let acl_interval = cfg.cleanup.acl_refresh_interval_secs;
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(acl_interval));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(acl_interval));
         loop {
             interval.tick().await;
             match AclChecker::load_from_db(&pool_acl, acl_default.clone()).await {

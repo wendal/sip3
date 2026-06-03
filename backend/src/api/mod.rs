@@ -1,4 +1,5 @@
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use axum::{
     Router,
     extract::Request,
@@ -13,7 +14,9 @@ use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
+use crate::api::webhook_dispatcher::WebhookDispatcher;
 use crate::config::Config;
+use crate::config_watch::ConfigWatcher;
 use crate::security_guard::{GuardLimits, SecurityGuard};
 
 pub mod accounts;
@@ -21,24 +24,36 @@ pub mod acl;
 pub mod admin_users;
 pub mod auth;
 pub mod conferences;
+pub mod email_worker;
 pub mod jwt;
 pub mod messages;
+pub mod metrics;
+pub mod openapi;
 pub mod rate_limit;
 pub mod security;
 pub mod stats;
 pub mod status;
 pub mod turn;
 pub mod voicemail;
+pub mod webhook_dispatcher;
+pub mod webhooks;
 
 /// Combined application state passed to all handlers
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
-    pub config: Config,
+    /// Hot-reloadable config. Read with `state.config.load().server.sip_domain`.
+    pub config: Arc<ArcSwap<Config>>,
     /// Effective JWT signing secret (may be randomly generated at startup if not configured).
     pub jwt_secret: String,
     pub auth_guard: Arc<Mutex<SecurityGuard>>,
     pub rate_limiter: Option<rate_limit::RateLimiter>,
+    /// Watches the config and broadcasts reloads to the rest of the system.
+    pub config_watcher: Arc<ConfigWatcher>,
+    /// Webhook outbox dispatcher; enqueue from anywhere, drain from background.
+    pub webhook_dispatcher: Arc<WebhookDispatcher>,
+    /// Background SMTP outbox worker.
+    pub email_worker: Arc<crate::api::email_worker::EmailWorker>,
 }
 
 /// Extract a Bearer token from the `Authorization` header.
@@ -83,7 +98,7 @@ async fn require_auth(
     }
 
     // Try X-Api-Key.
-    if let Some(api_key) = &state.config.auth.api_key {
+    if let Some(api_key) = &state.config.load().auth.api_key {
         let provided = req.headers().get("x-api-key").and_then(|v| v.to_str().ok());
         if provided == Some(api_key.as_str()) {
             return Ok(next.run(req).await);
@@ -136,9 +151,15 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         None
     };
 
+    let config_arc = Arc::new(ArcSwap::from_pointee(cfg.clone()));
+    let config_watcher = Arc::new(ConfigWatcher::new(
+        config_arc.clone(),
+        cfg.cleanup.acl_refresh_interval_secs,
+    ));
+
     let state = AppState {
-        pool,
-        config: cfg.clone(),
+        pool: pool.clone(),
+        config: config_arc.clone(),
         jwt_secret,
         auth_guard: Arc::new(Mutex::new(SecurityGuard::new(GuardLimits {
             window_secs: cfg.security.window_secs,
@@ -147,12 +168,27 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             block_secs: cfg.security.block_secs,
         }))),
         rate_limiter,
+        config_watcher: config_watcher.clone(),
+        webhook_dispatcher: Arc::new(WebhookDispatcher::new(pool.clone())),
+        email_worker: Arc::new(crate::api::email_worker::EmailWorker::new(
+            pool.clone(),
+            config_arc.clone(),
+        )),
     };
+
+    // Spawn the periodic config reload task. It reloads from
+    // `SIP3__*` env vars and `config.toml` (if present) and atomically
+    // replaces the live config.
+    config_watcher.spawn_periodic_reload();
+
+    // Spawn the webhook outbox drainer.
+    state.webhook_dispatcher.clone().spawn_worker();
 
     // JWT-only routes: caller must present a valid Bearer token; claims are injected.
     let jwt_routes = Router::new()
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/change-password", post(auth::change_password))
+        .route("/api/admin/reload", post(admin_reload))
         .layer(middleware::from_fn_with_state(state.clone(), require_jwt));
 
     // Dual-auth routes: accept Bearer JWT or X-Api-Key.
@@ -167,7 +203,10 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             "/api/registrations/:id",
             axum::routing::delete(status::delete_registration),
         )
-        .route("/api/calls", get(status::list_calls))
+        .route(
+            "/api/calls",
+            get(status::list_calls).post(status::export_calls),
+        )
         .route("/api/calls/cleanup", post(status::cleanup_calls))
         .route("/api/messages", get(messages::list_messages))
         .route("/api/stats", get(stats::get_stats))
@@ -203,6 +242,12 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             get(voicemail::list_boxes).post(voicemail::create_box),
         )
         .route("/api/voicemail/boxes/:id", put(voicemail::update_box))
+        .route(
+            "/api/voicemail/boxes/:id/greeting",
+            post(voicemail::upload_greeting)
+                .get(voicemail::download_greeting)
+                .delete(voicemail::delete_greeting),
+        )
         .route("/api/voicemail/messages", get(voicemail::list_messages))
         .route(
             "/api/voicemail/messages/:id",
@@ -212,6 +257,16 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             "/api/voicemail/messages/:id/download",
             get(voicemail::download_message),
         )
+        .route("/api/webhooks", get(webhooks::list).post(webhooks::create))
+        .route(
+            "/api/webhooks/:id",
+            put(webhooks::update).delete(webhooks::delete),
+        )
+        .route("/api/webhooks/deliveries", get(webhooks::list_deliveries))
+        .route(
+            "/api/webhooks/deliveries/:id/retry",
+            post(webhooks::retry_delivery),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let app = Router::new()
@@ -220,9 +275,15 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .route("/api/turn/credentials", post(turn::credentials))
         .route("/api/turn/health", get(turn::health))
         .route("/api/messages/history", post(messages::history))
+        .route("/api/metrics", get(metrics_handler))
+        .route("/api/openapi.json", get(openapi::openapi_json))
+        .merge(openapi::swagger_ui())
         .merge(jwt_routes)
         .merge(protected)
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::rate_limit_middleware,
+        ))
         .layer(cors)
         .with_state(state);
 
@@ -237,4 +298,45 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
 
 async fn health() -> &'static str {
     "OK"
+}
+
+/// Reload the runtime config from `SIP3__*` env vars and the optional
+/// `config.toml`. Replaces the live `Arc<ArcSwap<Config>>` atomically so
+/// in-flight handlers see the new values on their next read.
+async fn admin_reload(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    match state.config_watcher.reload_now().await {
+        Ok(cfg) => {
+            crate::api::metrics::inc_config_reload();
+            info!("admin: config reloaded");
+            Ok(axum::Json(serde_json::json!({
+                "status": "reloaded",
+                "sip_domain": cfg.server.sip_domain,
+                "api_port": cfg.server.api_port,
+                "public_ip": cfg.server.public_ip,
+            })))
+        }
+        Err(e) => {
+            tracing::warn!("admin: config reload failed: {}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
+}
+
+/// Prometheus exposition format. Public (no auth) so scrapers can hit it.
+async fn metrics_handler() -> (
+    axum::http::StatusCode,
+    [(axum::http::HeaderName, &'static str); 1],
+    Vec<u8>,
+) {
+    use axum::http::HeaderName;
+    (
+        axum::http::StatusCode::OK,
+        [(
+            HeaderName::from_static("content-type"),
+            "text/plain; version=0.0.4",
+        )],
+        metrics::render(),
+    )
 }

@@ -79,12 +79,12 @@ pub async fn login(
             {
                 warn!("Failed to persist security event: {}", e);
             }
-            if blocked && state.config.security.persist_acl_bans {
+            if blocked && state.config.load().security.persist_acl_bans {
                 if let Some(ip) = parse_ip(&source_ip)
                     && let Err(e) = persist_acl_ban(
                         &state.pool,
                         ip,
-                        state.config.security.acl_ban_priority,
+                        state.config.load().security.acl_ban_priority,
                         "auto-ban: api login brute force",
                     )
                     .await
@@ -132,12 +132,12 @@ pub async fn login(
         {
             warn!("Failed to persist security event: {}", e);
         }
-        if blocked && state.config.security.persist_acl_bans {
+        if blocked && state.config.load().security.persist_acl_bans {
             if let Some(ip) = parse_ip(&source_ip)
                 && let Err(e) = persist_acl_ban(
                     &state.pool,
                     ip,
-                    state.config.security.acl_ban_priority,
+                    state.config.load().security.acl_ban_priority,
                     "auto-ban: api login brute force",
                 )
                 .await
@@ -183,14 +183,14 @@ pub async fn login(
     let token = jwt::issue_token(
         &user.username,
         &state.jwt_secret,
-        state.config.auth.jwt_expiry_secs,
+        state.config.load().auth.jwt_expiry_secs,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(json!({
         "token": token,
         "username": user.username,
-        "expires_in": state.config.auth.jwt_expiry_secs,
+        "expires_in": state.config.load().auth.jwt_expiry_secs,
     })))
 }
 

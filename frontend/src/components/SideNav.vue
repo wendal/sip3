@@ -35,7 +35,7 @@
 import { useRoute } from 'vue-router'
 import {
   DataLine, User, Lock, Monitor, WarningFilled, Setting, PhoneFilled, ChatDotRound,
-  MessageBox,
+  MessageBox, Document,
 } from '@element-plus/icons-vue'
 import pkg from '../../package.json'
 import { adminVersionText } from '../utils/adminVersion.mjs'
@@ -55,6 +55,7 @@ const items = [
   { path: '/voicemail',   label: '语音信箱', icon: MessageBox },
   { path: '/acl',         label: 'IP ACL',   icon: Lock },
   { path: '/status',      label: '系统状态', icon: Monitor },
+  { path: '/calls',       label: '通话记录', icon: Document },
   { path: '/security',    label: '安全监控', icon: WarningFilled },
   { path: '/admin-users', label: '管理员',   icon: Setting },
 ]

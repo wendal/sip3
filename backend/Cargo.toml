@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.7", features = ["json", "multipart"] }
 tower-http = { version = "0.5", features = ["cors"] }
 sqlx = { version = "0.7", features = ["mysql", "runtime-tokio-native-tls", "chrono", "migrate"] }
 serde = { version = "1", features = ["derive"] }
@@ -40,7 +40,21 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 hmac = "0.12"
 sha1 = "0.10"
 base64 = "0.22"
+hex = "0.4"
 webrtc = "0.11"
+# Tier 1: observability
+prometheus = { version = "0.13", features = ["process"] }
+# Tier 1: OpenAPI / Swagger
+utoipa = { version = "4", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "6", features = ["axum"] }
+# Tier 1: webhook delivery + SMTP
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+sha2 = "0.10"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "hostname", "builder"] }
+# Tier 1: shared immutable config hot-reload
+arc-swap = "1"
+# Tier 1: CSV export
+csv = "1"
 
 [dev-dependencies]
 tokio-test = "0.4"

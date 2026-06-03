@@ -17,10 +17,10 @@ use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 
 use super::handler::DialogStores;
-use super::message::{SipMessage, extract_uri, uri_username};
-use super::response::base_response;
 use super::media::MediaRelay;
+use super::message::{SipMessage, extract_uri, uri_username};
 use super::proxy::{CALLER_ACCOUNT_EXISTS_SQL, build_forwarded_cancel_for_target};
+use super::response::base_response;
 use super::transport::TransportRegistry;
 use super::voicemail_media::{
     VoicemailDtmf, VoicemailMedia, parse_dtmf_relay, play_wav, record_to_storage,
@@ -29,7 +29,9 @@ use super::voicemail_mwi::{VoicemailMwi, registered_source_matches};
 use super::voicemail_sdp::{build_answer, negotiate_offer};
 use super::webrtc_gateway::WebRtcGateway;
 use crate::config::Config;
-use crate::models::voicemail::{VoicemailMessage, VOICEMAIL_STATUS_DELETED, VOICEMAIL_STATUS_NEW, VOICEMAIL_STATUS_SAVED};
+use crate::models::voicemail::{
+    VOICEMAIL_STATUS_DELETED, VOICEMAIL_STATUS_NEW, VOICEMAIL_STATUS_SAVED, VoicemailMessage,
+};
 use crate::storage::voicemail::LocalVoicemailStorage;
 
 #[derive(Clone)]
@@ -73,8 +75,14 @@ enum RecordingPersistenceDecision {
 
 #[derive(Debug, Clone)]
 enum VoicemailMode {
-    PinEntry { box_id: u64, mailbox: String },
-    Recording { box_id: u64, mailbox: String },
+    PinEntry {
+        box_id: u64,
+        mailbox: String,
+    },
+    Recording {
+        box_id: u64,
+        mailbox: String,
+    },
     Playback {
         mailbox: String,
         #[allow(dead_code)]
@@ -211,7 +219,10 @@ impl Voicemail {
         {
             Ok(msgs) => msgs,
             Err(e) => {
-                warn!("Failed to list voicemail messages for box {}: {}", box_id, e);
+                warn!(
+                    "Failed to list voicemail messages for box {}: {}",
+                    box_id, e
+                );
                 Vec::new()
             }
         }
@@ -299,7 +310,8 @@ impl Voicemail {
             &negotiation,
         );
 
-        let has_pin = settings.pin_hash.is_some() && !settings.pin_hash.as_ref().unwrap().is_empty();
+        let has_pin =
+            settings.pin_hash.is_some() && !settings.pin_hash.as_ref().unwrap().is_empty();
 
         let mode = if has_pin {
             VoicemailMode::PinEntry {
@@ -516,11 +528,21 @@ impl Voicemail {
             let Some(call) = active.get(call_id) else {
                 return;
             };
-            let VoicemailMode::Playback { mailbox, box_id: _, messages, current_index: _ } = &call.mode else {
+            let VoicemailMode::Playback {
+                mailbox,
+                box_id: _,
+                messages,
+                current_index: _,
+            } = &call.mode
+            else {
                 return;
             };
             if index >= messages.len() {
-                debug!("Voicemail playback index {} out of range ({} messages)", index, messages.len());
+                debug!(
+                    "Voicemail playback index {} out of range ({} messages)",
+                    index,
+                    messages.len()
+                );
                 return;
             }
             let msg = &messages[index];
@@ -535,10 +557,16 @@ impl Voicemail {
         ));
         tokio::spawn(async move {
             if let Err(e) = play_wav(&play_call_id, &storage_key, &storage).await {
-                debug!("Voicemail message playback failed for {}: {}", play_call_id, e);
+                debug!(
+                    "Voicemail message playback failed for {}: {}",
+                    play_call_id, e
+                );
             }
         });
-        info!("Voicemail playback started for {} at index {}", mailbox, index);
+        info!(
+            "Voicemail playback started for {} at index {}",
+            mailbox, index
+        );
     }
 
     async fn delete_message_at_index(&self, call_id: &str, index: usize) {
@@ -547,7 +575,13 @@ impl Voicemail {
             let Some(call) = active.get(call_id) else {
                 return;
             };
-            let VoicemailMode::Playback { mailbox, box_id: _, messages, current_index: _ } = &call.mode else {
+            let VoicemailMode::Playback {
+                mailbox,
+                box_id: _,
+                messages,
+                current_index: _,
+            } = &call.mode
+            else {
                 return;
             };
             if index >= messages.len() {
@@ -556,13 +590,11 @@ impl Voicemail {
             (messages[index].id, mailbox.clone())
         };
 
-        if let Err(e) = sqlx::query(
-            "UPDATE sip_voicemail_messages SET status = ? WHERE id = ?",
-        )
-        .bind(VOICEMAIL_STATUS_DELETED)
-        .bind(msg_id)
-        .execute(&self.pool)
-        .await
+        if let Err(e) = sqlx::query("UPDATE sip_voicemail_messages SET status = ? WHERE id = ?")
+            .bind(VOICEMAIL_STATUS_DELETED)
+            .bind(msg_id)
+            .execute(&self.pool)
+            .await
         {
             warn!("Failed to delete voicemail message {}: {}", msg_id, e);
             return;
@@ -571,7 +603,12 @@ impl Voicemail {
         {
             let mut active = self.active.lock().await;
             if let Some(call) = active.get_mut(call_id)
-                && let VoicemailMode::Playback { mailbox: _, box_id: _, messages, current_index } = &mut call.mode
+                && let VoicemailMode::Playback {
+                    mailbox: _,
+                    box_id: _,
+                    messages,
+                    current_index,
+                } = &mut call.mode
             {
                 messages.remove(index);
                 if *current_index >= messages.len() && !messages.is_empty() {
@@ -593,7 +630,13 @@ impl Voicemail {
             let Some(call) = active.get(call_id) else {
                 return;
             };
-            let VoicemailMode::Playback { mailbox, box_id: _, messages, current_index: _ } = &call.mode else {
+            let VoicemailMode::Playback {
+                mailbox,
+                box_id: _,
+                messages,
+                current_index: _,
+            } = &call.mode
+            else {
                 return;
             };
             if index >= messages.len() {
@@ -617,7 +660,12 @@ impl Voicemail {
         {
             let mut active = self.active.lock().await;
             if let Some(call) = active.get_mut(call_id)
-                && let VoicemailMode::Playback { mailbox: _, box_id: _, messages, current_index: _ } = &mut call.mode
+                && let VoicemailMode::Playback {
+                    mailbox: _,
+                    box_id: _,
+                    messages,
+                    current_index: _,
+                } = &mut call.mode
                 && index < messages.len()
             {
                 messages[index].status = VOICEMAIL_STATUS_SAVED.to_string();
@@ -650,14 +698,27 @@ impl Voicemail {
                     );
                     self.media.remove(&call_id).await;
                 }
-                (VoicemailMode::Playback { mailbox, box_id: _, messages, current_index }, VoicemailDtmf::One) => {
+                (
+                    VoicemailMode::Playback {
+                        mailbox,
+                        box_id: _,
+                        messages,
+                        current_index,
+                    },
+                    VoicemailDtmf::One,
+                ) => {
                     debug!("Voicemail playback for {} got 1 - previous", mailbox);
                     if !messages.is_empty() && current_index > 0 {
                         let new_index = current_index - 1;
                         {
                             let mut active = self.active.lock().await;
                             if let Some(call) = active.get_mut(&call_id)
-                                && let VoicemailMode::Playback { mailbox: _, box_id: _, messages: _, current_index: idx } = &mut call.mode
+                                && let VoicemailMode::Playback {
+                                    mailbox: _,
+                                    box_id: _,
+                                    messages: _,
+                                    current_index: idx,
+                                } = &mut call.mode
                             {
                                 *idx = new_index;
                             }
@@ -665,14 +726,27 @@ impl Voicemail {
                         self.play_message_at_index(&call_id, new_index).await;
                     }
                 }
-                (VoicemailMode::Playback { mailbox, box_id: _, messages, current_index }, VoicemailDtmf::Two) => {
+                (
+                    VoicemailMode::Playback {
+                        mailbox,
+                        box_id: _,
+                        messages,
+                        current_index,
+                    },
+                    VoicemailDtmf::Two,
+                ) => {
                     debug!("Voicemail playback for {} got 2 - next", mailbox);
                     if !messages.is_empty() && current_index + 1 < messages.len() {
                         let new_index = current_index + 1;
                         {
                             let mut active = self.active.lock().await;
                             if let Some(call) = active.get_mut(&call_id)
-                                && let VoicemailMode::Playback { mailbox: _, box_id: _, messages: _, current_index: idx } = &mut call.mode
+                                && let VoicemailMode::Playback {
+                                    mailbox: _,
+                                    box_id: _,
+                                    messages: _,
+                                    current_index: idx,
+                                } = &mut call.mode
                             {
                                 *idx = new_index;
                             }
@@ -680,14 +754,27 @@ impl Voicemail {
                         self.play_message_at_index(&call_id, new_index).await;
                     }
                 }
-                (VoicemailMode::Playback { mailbox, box_id: _, messages, current_index }, VoicemailDtmf::Pound) => {
+                (
+                    VoicemailMode::Playback {
+                        mailbox,
+                        box_id: _,
+                        messages,
+                        current_index,
+                    },
+                    VoicemailDtmf::Pound,
+                ) => {
                     debug!("Voicemail playback for {} got # - next", mailbox);
                     if !messages.is_empty() && current_index + 1 < messages.len() {
                         let new_index = current_index + 1;
                         {
                             let mut active = self.active.lock().await;
                             if let Some(call) = active.get_mut(&call_id)
-                                && let VoicemailMode::Playback { mailbox: _, box_id: _, messages: _, current_index: idx } = &mut call.mode
+                                && let VoicemailMode::Playback {
+                                    mailbox: _,
+                                    box_id: _,
+                                    messages: _,
+                                    current_index: idx,
+                                } = &mut call.mode
                             {
                                 *idx = new_index;
                             }
@@ -695,13 +782,29 @@ impl Voicemail {
                         self.play_message_at_index(&call_id, new_index).await;
                     }
                 }
-                (VoicemailMode::Playback { mailbox, box_id: _, messages, current_index }, VoicemailDtmf::Seven) => {
+                (
+                    VoicemailMode::Playback {
+                        mailbox,
+                        box_id: _,
+                        messages,
+                        current_index,
+                    },
+                    VoicemailDtmf::Seven,
+                ) => {
                     debug!("Voicemail playback for {} got 7 - delete", mailbox);
                     if !messages.is_empty() {
                         self.delete_message_at_index(&call_id, current_index).await;
                     }
                 }
-                (VoicemailMode::Playback { mailbox, box_id: _, messages, current_index }, VoicemailDtmf::Nine) => {
+                (
+                    VoicemailMode::Playback {
+                        mailbox,
+                        box_id: _,
+                        messages,
+                        current_index,
+                    },
+                    VoicemailDtmf::Nine,
+                ) => {
                     debug!("Voicemail playback for {} got 9 - save", mailbox);
                     if !messages.is_empty() {
                         self.save_message_at_index(&call_id, current_index).await;
@@ -721,11 +824,12 @@ impl Voicemail {
                         let mut active = self.active.lock().await;
                         if let Some(call) = active.get_mut(&call_id) {
                             let pin = call.pin_buffer.clone();
-                            let (box_id, mailbox) = if let VoicemailMode::PinEntry { box_id, mailbox } = &call.mode {
-                                (*box_id, mailbox.clone())
-                            } else {
-                                (0, String::new())
-                            };
+                            let (box_id, mailbox) =
+                                if let VoicemailMode::PinEntry { box_id, mailbox } = &call.mode {
+                                    (*box_id, mailbox.clone())
+                                } else {
+                                    (0, String::new())
+                                };
                             (Some((pin, box_id, mailbox)), call.pin_buffer.clone())
                         } else {
                             (None, String::new())
@@ -772,8 +876,13 @@ impl Voicemail {
                                 if let Some(key) = greeting_key {
                                     let play_call_id = call_id.clone();
                                     tokio::spawn(async move {
-                                        if let Err(e) = play_wav(&play_call_id, &key, &storage).await {
-                                            debug!("Voicemail greeting playback skipped/failed: {}", e);
+                                        if let Err(e) =
+                                            play_wav(&play_call_id, &key, &storage).await
+                                        {
+                                            debug!(
+                                                "Voicemail greeting playback skipped/failed: {}",
+                                                e
+                                            );
                                         }
                                     });
                                 }
