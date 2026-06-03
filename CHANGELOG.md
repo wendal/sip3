@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## [v1.9.0] - 2026-06-03
 
 ### Added
 - **Prometheus /metrics endpoint** with 12 series covering registrations, calls, conferences, security, rate limiting, and background workers (`backend/src/api/metrics.rs`).
