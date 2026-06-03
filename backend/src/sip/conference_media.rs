@@ -92,7 +92,20 @@ impl Participant {
 struct Room {
     participants: HashMap<String, Arc<Participant>>,
     mixer_task: Option<JoinHandle<()>>,
+    /// Per-room conference recorder. Some only when the room's
+    /// `record_enabled` flag was true at the time the first participant
+    /// joined.
+    recorder: Option<Arc<RoomRecorder>>,
 }
+
+/// Holds the in-memory PCM sample buffer for a single room's recording.
+/// Capped at 30 minutes (8 kHz * 60 * 30 = 14.4M samples).
+pub struct RoomRecorder {
+    pub samples: tokio::sync::Mutex<Vec<i16>>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+}
+
+const MAX_RECORDING_SAMPLES: usize = 8_000 * 60 * 30; // 30 min @ 8 kHz
 
 /// Shared conference media manager. Cheap to clone (`Arc` inside).
 #[derive(Clone)]
@@ -168,6 +181,7 @@ impl ConferenceMedia {
         let room = rooms.entry(room_id).or_insert_with(|| Room {
             participants: HashMap::new(),
             mixer_task: None,
+            recorder: None,
         });
         room.participants.insert(call_id.clone(), participant);
 
@@ -201,6 +215,7 @@ impl ConferenceMedia {
         {
             handle.abort();
         }
+        // Flush room recorder if any (last participant leaves).
         if room.participants.is_empty() {
             if let Some(handle) = room.mixer_task.take() {
                 handle.abort();
@@ -214,6 +229,19 @@ impl ConferenceMedia {
                 room.participants.len() as i64,
             );
         }
+    }
+
+    /// Helper: drain the recorder's sample buffer to a WAV byte vector.
+    /// Caller is responsible for writing the bytes to storage and
+    /// inserting a sip_conference_recordings row.
+    pub async fn flush_recorder(&self, room_id: u64) -> Option<(Vec<u8>, u32)> {
+        let rooms = self.rooms.lock().await;
+        let recorder = rooms.get(&room_id)?.recorder.as_ref()?;
+        let mut buf = recorder.samples.lock().await;
+        let samples = std::mem::take(&mut *buf);
+        let duration_secs = (samples.len() as u32) / 8000;
+        let wav = crate::storage::voicemail::pcm16_wav_bytes(&samples, 8000);
+        Some((wav, duration_secs))
     }
 
     /// Force-set mute via admin API, ignoring DTMF.
@@ -408,6 +436,44 @@ async fn run_mixer_loop(rooms: Arc<Mutex<HashMap<u64, Room>>>, room_id: u64) {
                 .fetch_add(SAMPLES_PER_FRAME as u32, Ordering::SeqCst);
             let packet = build_rtp_packet(receiver.audio_pt, seq, ts, receiver.out_ssrc, &payload);
             let _ = receiver.socket.send_to(&packet, peer).await;
+        }
+
+        // Room-level recording: if this room has a recorder attached, mix
+        // every non-muted participant into a single 160-sample frame and
+        // append it to the recorder's sample buffer. Capped at 30 minutes
+        // (8 kHz * 2 byte * 1800s = 28.8 MB per recording) to bound memory.
+        let room_mix: Option<Vec<i16>> = {
+            let mut acc: Vec<i32> = vec![0i32; SAMPLES_PER_FRAME];
+            let mut has_audio = false;
+            for (_, frame) in &frames {
+                if let Some(f) = frame {
+                    has_audio = true;
+                    for (a, s) in acc.iter_mut().zip(f.iter()) {
+                        *a += *s as i32;
+                    }
+                }
+            }
+            if has_audio {
+                Some(
+                    acc.into_iter()
+                        .map(|v| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        };
+        if let Some(mix) = room_mix {
+            let recorder_clone = {
+                let rooms = rooms.lock().await;
+                rooms.get(&room_id).and_then(|r| r.recorder.clone())
+            };
+            if let Some(recorder) = recorder_clone {
+                let mut buf = recorder.samples.lock().await;
+                if buf.len() < MAX_RECORDING_SAMPLES {
+                    buf.extend_from_slice(&mix);
+                }
+            }
         }
     }
 }
