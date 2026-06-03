@@ -9,6 +9,7 @@ import Phone from '../views/Phone.vue'
 import Security from '../views/Security.vue'
 import Conferences from '../views/Conferences.vue'
 import Voicemail from '../views/Voicemail.vue'
+import Calls from '../views/Calls.vue'
 
 const routes = [
   { path: '/login', component: Login, meta: { public: true } },
@@ -22,6 +23,7 @@ const routes = [
   { path: '/conferences', component: Conferences },
   { path: '/voicemail', component: Voicemail },
   { path: '/security', component: Security },
+  { path: '/calls', component: Calls },
 ]
 
 const router = createRouter({
