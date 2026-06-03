@@ -10,8 +10,8 @@ use tracing::{info, warn};
 use super::message::{
     SipMessage, extract_uri, make_www_authenticate, md5_hex, parse_auth_params, uri_username,
 };
-use super::response::base_response;
 use super::presence::{Presence, PresenceStatus};
+use super::response::base_response;
 use crate::config::Config;
 use crate::security_guard::{
     AuthSurface, SecurityEventType, SecurityGuard, persist_acl_ban, persist_security_event,
@@ -273,6 +273,8 @@ impl Registrar {
             self.presence
                 .notify_status_change(&username, domain, PresenceStatus::Open)
                 .await;
+
+            crate::api::metrics::inc_registration();
 
             Ok(base_response(msg, 200, "OK")
                 .header("Contact", &format!("<{}>;expires={}", contact_uri, expires))

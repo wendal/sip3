@@ -183,6 +183,10 @@ impl ConferenceMedia {
             "Conference room {} added participant {} on port {}",
             room_id, call_id, relay_port
         );
+        crate::api::metrics::set_conference_participants(
+            &room_id.to_string(),
+            room.participants.len() as i64,
+        );
         Ok(JoinedParticipant { relay_port })
     }
 
@@ -203,6 +207,12 @@ impl ConferenceMedia {
             }
             rooms.remove(&room_id);
             debug!("Conference room {} closed (empty)", room_id);
+            crate::api::metrics::set_conference_participants(&room_id.to_string(), 0);
+        } else {
+            crate::api::metrics::set_conference_participants(
+                &room_id.to_string(),
+                room.participants.len() as i64,
+            );
         }
     }
 

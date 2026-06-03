@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use anyhow::{Result, anyhow};
+use std::collections::HashMap;
 
 pub const SIP_ALLOW_METHODS: &str =
     "REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY, SUBSCRIBE, MESSAGE";
@@ -558,14 +558,23 @@ mod tests {
 
     #[test]
     fn test_extract_uri_rejects_non_sip() {
-        assert_eq!(extract_uri("tel:+1234567890"), Some("tel:+1234567890".to_string()));
+        assert_eq!(
+            extract_uri("tel:+1234567890"),
+            Some("tel:+1234567890".to_string())
+        );
         assert_eq!(extract_uri("invalid"), None);
     }
 
     #[test]
     fn test_uri_username_extraction() {
-        assert_eq!(uri_username("sip:alice@sip.example.com"), Some("alice".to_string()));
-        assert_eq!(uri_username("sip:bob@192.168.1.1:5060"), Some("bob".to_string()));
+        assert_eq!(
+            uri_username("sip:alice@sip.example.com"),
+            Some("alice".to_string())
+        );
+        assert_eq!(
+            uri_username("sip:bob@192.168.1.1:5060"),
+            Some("bob".to_string())
+        );
         assert_eq!(
             uri_username("sip:charlie@domain.com;transport=udp"),
             Some("charlie".to_string())
@@ -576,8 +585,14 @@ mod tests {
 
     #[test]
     fn test_uri_host_extraction() {
-        assert_eq!(uri_host("sip:alice@sip.example.com"), Some("sip.example.com".to_string()));
-        assert_eq!(uri_host("sip:bob@192.168.1.1:5060"), Some("192.168.1.1:5060".to_string()));
+        assert_eq!(
+            uri_host("sip:alice@sip.example.com"),
+            Some("sip.example.com".to_string())
+        );
+        assert_eq!(
+            uri_host("sip:bob@192.168.1.1:5060"),
+            Some("192.168.1.1:5060".to_string())
+        );
         assert_eq!(
             uri_host("sip:charlie@proxy.com;transport=udp"),
             Some("proxy.com".to_string())
@@ -590,10 +605,22 @@ mod tests {
         let params = parse_auth_params(auth_header);
 
         assert_eq!(params.get("username").map(|s| s.as_str()), Some("alice"));
-        assert_eq!(params.get("realm").map(|s| s.as_str()), Some("sip.example.com"));
-        assert_eq!(params.get("nonce").map(|s| s.as_str()), Some("abcdef123456"));
-        assert_eq!(params.get("uri").map(|s| s.as_str()), Some("sip:sip.example.com"));
-        assert_eq!(params.get("response").map(|s| s.as_str()), Some("abc123def456"));
+        assert_eq!(
+            params.get("realm").map(|s| s.as_str()),
+            Some("sip.example.com")
+        );
+        assert_eq!(
+            params.get("nonce").map(|s| s.as_str()),
+            Some("abcdef123456")
+        );
+        assert_eq!(
+            params.get("uri").map(|s| s.as_str()),
+            Some("sip:sip.example.com")
+        );
+        assert_eq!(
+            params.get("response").map(|s| s.as_str()),
+            Some("abc123def456")
+        );
     }
 
     #[test]
@@ -621,7 +648,10 @@ mod tests {
         let params = parse_auth_params(header);
 
         assert_eq!(params.get("username").map(|s| s.as_str()), Some("alice"));
-        assert_eq!(params.get("realm").map(|s| s.as_str()), Some("sip.example.com"));
+        assert_eq!(
+            params.get("realm").map(|s| s.as_str()),
+            Some("sip.example.com")
+        );
     }
 
     #[test]
@@ -768,8 +798,14 @@ mod tests {
         let auth_header = r#"Digest realm="test\"realm", nonce="abc\"def\"ghi", algorithm=MD5"#;
         let params = parse_auth_params(auth_header);
 
-        assert_eq!(params.get("realm").map(|s| s.as_str()), Some(r#"test\"realm"#));
-        assert_eq!(params.get("nonce").map(|s| s.as_str()), Some(r#"abc\"def\"ghi"#));
+        assert_eq!(
+            params.get("realm").map(|s| s.as_str()),
+            Some(r#"test\"realm"#)
+        );
+        assert_eq!(
+            params.get("nonce").map(|s| s.as_str()),
+            Some(r#"abc\"def\"ghi"#)
+        );
         assert_eq!(params.get("algorithm").map(|s| s.as_str()), Some("MD5"));
     }
 
@@ -780,18 +816,30 @@ mod tests {
 
         assert_eq!(params.get("realm").map(|s| s.as_str()), Some("test, realm"));
         assert_eq!(params.get("nonce").map(|s| s.as_str()), Some("abc,def"));
-        assert_eq!(params.get("uri").map(|s| s.as_str()), Some("sip:test,test.com"));
+        assert_eq!(
+            params.get("uri").map(|s| s.as_str()),
+            Some("sip:test,test.com")
+        );
     }
 
     #[test]
     fn test_uri_username_with_sips() {
-        assert_eq!(uri_username("sips:alice@sip.example.com"), Some("alice".to_string()));
-        assert_eq!(uri_username("sips:bob@sip.example.com"), Some("bob".to_string()));
+        assert_eq!(
+            uri_username("sips:alice@sip.example.com"),
+            Some("alice".to_string())
+        );
+        assert_eq!(
+            uri_username("sips:bob@sip.example.com"),
+            Some("bob".to_string())
+        );
     }
 
     #[test]
     fn test_uri_host_with_port_and_params() {
-        assert_eq!(uri_host("sip:alice@192.168.1.1:5060;transport=tls"), Some("192.168.1.1:5060".to_string()));
+        assert_eq!(
+            uri_host("sip:alice@192.168.1.1:5060;transport=tls"),
+            Some("192.168.1.1:5060".to_string())
+        );
     }
 
     #[test]

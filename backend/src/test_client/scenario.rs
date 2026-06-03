@@ -10,8 +10,8 @@ use super::assertions::ScenarioOutcome;
 use super::dialog::DialogTrace;
 use super::endpoint::{SipEndpoint, SipEndpointConfig, SipEvent, run_scoped_id};
 use super::rtp_probe::RtpProbe;
-use crate::sip::message::{extract_uri, uri_username};
 use crate::sip::media::sdp_rtp_addr;
+use crate::sip::message::{extract_uri, uri_username};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScenarioName {

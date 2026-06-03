@@ -225,9 +225,15 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .route("/api/turn/credentials", post(turn::credentials))
         .route("/api/turn/health", get(turn::health))
         .route("/api/messages/history", post(messages::history))
+        .route("/api/metrics", get(metrics_handler))
+        .route("/api/openapi.json", get(openapi::openapi_json))
+        .merge(openapi::swagger_ui())
         .merge(jwt_routes)
         .merge(protected)
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::rate_limit_middleware,
+        ))
         .layer(cors)
         .with_state(state);
 
@@ -242,4 +248,21 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
 
 async fn health() -> &'static str {
     "OK"
+}
+
+/// Prometheus exposition format. Public (no auth) so scrapers can hit it.
+async fn metrics_handler() -> (
+    axum::http::StatusCode,
+    [(axum::http::HeaderName, &'static str); 1],
+    Vec<u8>,
+) {
+    use axum::http::HeaderName;
+    (
+        axum::http::StatusCode::OK,
+        [(
+            HeaderName::from_static("content-type"),
+            "text/plain; version=0.0.4",
+        )],
+        metrics::render(),
+    )
 }

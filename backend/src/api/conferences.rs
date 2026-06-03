@@ -3,8 +3,8 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use serde_json::{Value, json};
 use bcrypt::{DEFAULT_COST, hash};
+use serde_json::{Value, json};
 
 use super::AppState;
 use crate::models::{
@@ -53,8 +53,12 @@ pub async fn create(
                 "PIN must be between 4 and 16 characters".to_string(),
             ));
         }
-        Some(hash(pin, DEFAULT_COST)
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash PIN".to_string()))?)
+        Some(hash(pin, DEFAULT_COST).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to hash PIN".to_string(),
+            )
+        })?)
     } else {
         None
     };
@@ -111,8 +115,12 @@ pub async fn update(
                 "PIN must be between 4 and 16 characters".to_string(),
             ));
         } else {
-            Some(hash(pin, DEFAULT_COST)
-                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash PIN".to_string()))?)
+            Some(hash(pin, DEFAULT_COST).map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to hash PIN".to_string(),
+                )
+            })?)
         }
     } else {
         None

@@ -563,7 +563,10 @@ mod tests {
             parse_dtmf_relay("Duration=160\r\nSignal = 9\r\n"),
             Some(VoicemailDtmf::Nine)
         );
-        assert_eq!(parse_dtmf_relay("Signal=3\r\nDuration=160\r\n"), Some(VoicemailDtmf::Digit('3')));
+        assert_eq!(
+            parse_dtmf_relay("Signal=3\r\nDuration=160\r\n"),
+            Some(VoicemailDtmf::Digit('3'))
+        );
         assert_eq!(parse_dtmf_relay("Duration=160\r\n"), None);
     }
 

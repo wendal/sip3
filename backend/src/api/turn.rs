@@ -1,8 +1,8 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha1::Sha1;
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -146,10 +146,8 @@ async fn check_tcp_reachable(addr: SocketAddr) -> bool {
     };
     match socket {
         Ok(socket) => {
-            let connect = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                socket.connect(addr),
-            );
+            let connect =
+                tokio::time::timeout(std::time::Duration::from_secs(2), socket.connect(addr));
             matches!(connect.await, Ok(Ok(_)))
         }
         Err(_) => false,
@@ -177,7 +175,9 @@ pub async fn health(State(state): State<AppState>) -> Json<TurnHealthResponse> {
     let mut reachable = false;
     if enabled {
         for server in &servers {
-            if let Some(addr) = parse_turn_uri(server) && check_tcp_reachable(addr).await {
+            if let Some(addr) = parse_turn_uri(server)
+                && check_tcp_reachable(addr).await
+            {
                 reachable = true;
                 break;
             }

@@ -19,22 +19,20 @@ use tracing::{debug, info, warn};
 use super::conference_media::ConferenceMedia;
 use super::conference_sdp::{ConferenceCodec, build_answer, negotiate_offer};
 use super::message::{SipMessage, extract_uri, uri_username};
-use super::response::base_response;
 use super::proxy::CALLER_ACCOUNT_EXISTS_SQL;
+use super::response::base_response;
 use crate::config::Config;
 use crate::models::conference::validate_conference_extension;
 
 fn extract_pin_from_uri(uri: &str) -> Option<String> {
-    uri.split(';')
-        .skip(1)
-        .find_map(|param| {
-            let (key, value) = param.split_once('=')?;
-            if key.trim() == "pin" {
-                Some(value.trim().to_string())
-            } else {
-                None
-            }
-        })
+    uri.split(';').skip(1).find_map(|param| {
+        let (key, value) = param.split_once('=')?;
+        if key.trim() == "pin" {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 #[derive(Clone)]
@@ -136,25 +134,30 @@ impl Conference {
             return Ok(base_response(msg, 403, "Forbidden").build());
         }
 
-        let pin_hash: Option<String> = sqlx::query_scalar(
-            "SELECT pin_hash FROM sip_conference_rooms WHERE id = ?",
-        )
-        .bind(room_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten();
+        let pin_hash: Option<String> =
+            sqlx::query_scalar("SELECT pin_hash FROM sip_conference_rooms WHERE id = ?")
+                .bind(room_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
 
         if let Some(expected_hash) = pin_hash {
             let provided_pin = extract_pin_from_uri(request_uri);
             match provided_pin {
                 Some(pin) => {
                     if !verify(&pin, &expected_hash).unwrap_or(false) {
-                        warn!("Conference {} rejected invalid PIN from {}", extension, caller);
+                        warn!(
+                            "Conference {} rejected invalid PIN from {}",
+                            extension, caller
+                        );
                         return Ok(base_response(msg, 403, "Forbidden - Invalid PIN").build());
                     }
                 }
                 None => {
-                    warn!("Conference {} requires PIN but none provided by {}", extension, caller);
+                    warn!(
+                        "Conference {} requires PIN but none provided by {}",
+                        extension, caller
+                    );
                     return Ok(base_response(msg, 403, "Forbidden - PIN Required").build());
                 }
             }

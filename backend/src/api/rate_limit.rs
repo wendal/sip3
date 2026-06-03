@@ -1,9 +1,4 @@
-use axum::{
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -38,7 +33,10 @@ impl RateLimiter {
         let now = Instant::now();
         let window = Duration::from_secs(self.window_secs);
 
-        let timestamps = state.requests.entry(key.to_string()).or_insert_with(Vec::new);
+        let timestamps = state
+            .requests
+            .entry(key.to_string())
+            .or_insert_with(Vec::new);
 
         timestamps.retain(|t| now.duration_since(*t) < window);
 
@@ -51,10 +49,7 @@ impl RateLimiter {
     }
 }
 
-pub async fn rate_limit_middleware(
-    req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
+pub async fn rate_limit_middleware(req: Request, next: Next) -> Result<Response, StatusCode> {
     let client_ip = req
         .headers()
         .get("x-forwarded-for")
@@ -68,7 +63,10 @@ pub async fn rate_limit_middleware(
         .get::<super::AppState>()
         .and_then(|s| s.rate_limiter.clone());
 
-    if let Some(limiter) = rate_limiter && !limiter.check(&client_ip).await {
+    if let Some(limiter) = rate_limiter
+        && !limiter.check(&client_ip).await
+    {
+        crate::api::metrics::inc_rate_limit_hit();
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
