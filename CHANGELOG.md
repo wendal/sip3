@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Added
+- **Prometheus /metrics endpoint** with 12 series covering registrations, calls, conferences, security, rate limiting, and background workers (`backend/src/api/metrics.rs`).
+- **OpenAPI 3.1 spec + Swagger UI** at `/api/docs`; full route inventory + auth schemes (`backend/src/api/openapi.rs`).
+- **Config hot reload** via `POST /api/admin/reload` and a periodic background task (`backend/src/config_watch.rs`); uses `arc_swap::ArcSwap<Config>` for lock-free reads.
+- **Webhooks** with DB-backed outbox + delivery worker, HMAC-SHA256 signing (`X-Sip3-Signature`), exponential backoff retry (max 10 attempts), and admin CRUD (`backend/src/api/{webhooks,webhook_dispatcher}.rs`).
+- **Voicemail email push** via SMTP (lettre + rustls); `sip_email_outbox` table drained every 15s; no-op until `email.smtp_host` is configured.
+- **Custom voicemail greeting upload** (`POST /api/voicemail/boxes/:id/greeting`) accepting 8kHz mono PCM16 WAV up to 60s; user uploads override system prompts.
+- **Voicemail prompt language selector** (`SIP3__SERVER__VOICEMAIL_PROMPT_LANG`, default `en`); `scripts/gen-prompts.sh` generates en + zh 8kHz WAVs via espeak-ng.
+- **Conference WAV recording** foundation: per-room recorder buffer in the mixer; flush helper returns `(wav_bytes, duration_secs)`. Wire-up to `Conference::handle_invite/handle_bye` and the recordings API are tracked as follow-ups.
+- **CDR CSV export** at `GET /api/calls` (or POST with `?format=csv`); UTF-8 BOM, 11 columns including the new `hangup_cause`, `sip_response_code`, `recording_key`.
+- **Frontend Calls page** (`/calls`) with server-paginated table, date/status/party filters, and CSV export button.
+- **`frontend/package.json` test script** wires the existing `src/utils/*.test.mjs` files into `npm test` (26 tests pass).
+- **New headless_call_tester scenarios**: `invite_busy_to_vm` and `conference_pin` (skeleton registration; full flow requires DB seeding — see TODO markers).
+
+### Changed
+- `AppState.config: Config` -> `Arc<ArcSwap<Config>>`; all 30+ handler call sites now use `state.config.load().foo`. The old `Config` deep clone per request is gone.
+- `migrations/` and `backend/migrations/` are back in sync; `migrations/015_voicemail_email.sql` was missing from the top-level copy.
+- Voicemail boxes now return `email` + `has_greeting` in the list endpoint; the `update_box` SQL was binding `email = COALESCE(?, email)` correctly only after C5.
+- Conference mix loop now also computes a room-level sum and appends it to the room recorder (when one is attached).
+- `Cargo.toml` adds: `prometheus`, `utoipa`, `utoipa-swagger-ui`, `reqwest`, `sha2`, `lettre`, `arc-swap`, `csv`, `hex`, `axum multipart` feature.
+
+### Configuration
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `server.voicemail_prompt_lang` | `en` | `en` or `zh`; selects `<voicemail_prompt_dir>/<lang>/<name>.wav` |
+| `email.smtp_host` | empty | When set, voicemail email outbox is drained; otherwise rows accumulate |
+| `email.smtp_port` | 587 | SMTP port |
+| `email.smtp_username` | empty | SMTP auth username |
+| `email.smtp_password` | empty | SMTP auth password |
+| `email.from_address` | empty | From address (RFC 5322) |
+| `email.use_tls` | false | SMTPS (TLS implicit) vs SMTP+STARTTLS |
+
 ## [v1.8.0] - 2026-06-01
 
 ### Added
