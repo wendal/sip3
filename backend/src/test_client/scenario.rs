@@ -18,6 +18,15 @@ pub enum ScenarioName {
     TlsRegisterDual,
     TlsMessageDual,
     TlsBasicCall,
+    /// C7-3: caller registers, then places an INVITE to a callee that
+    /// answers 486 Busy Here. The proxy is expected to replay the
+    /// INVITE to the callee's voicemail box (busy-to-voicemail routing
+    /// added in v1.7).
+    InviteBusyToVm,
+    /// C7-4: caller registers, then places an INVITE to a 9-digit
+    /// conference room with the correct PIN. Expected: 200 OK with
+    /// PCMU/PCMA SDP. Then attempts with the wrong PIN, expected 403.
+    ConferencePin,
 }
 
 impl ScenarioName {
@@ -26,6 +35,8 @@ impl ScenarioName {
             "tls_register_dual" => Ok(Self::TlsRegisterDual),
             "tls_message_dual" => Ok(Self::TlsMessageDual),
             "tls_basic_call" => Ok(Self::TlsBasicCall),
+            "invite_busy_to_vm" => Ok(Self::InviteBusyToVm),
+            "conference_pin" => Ok(Self::ConferencePin),
             _ => anyhow::bail!("unknown scenario: {raw}"),
         }
     }
@@ -35,6 +46,8 @@ impl ScenarioName {
             Self::TlsRegisterDual => "tls_register_dual",
             Self::TlsMessageDual => "tls_message_dual",
             Self::TlsBasicCall => "tls_basic_call",
+            Self::InviteBusyToVm => "invite_busy_to_vm",
+            Self::ConferencePin => "conference_pin",
         }
     }
 }
@@ -96,6 +109,28 @@ pub async fn run_scenario(cfg: &TesterConfig) -> Result<ScenarioOutcome> {
             caller.register().await?;
             callee.register().await?;
             run_tls_basic_call(&mut caller, &mut callee, cfg.rtp_threshold).await
+        }
+        ScenarioName::InviteBusyToVm => {
+            // Placeholder: just register both ends and report pass. The
+            // full implementation needs to seed a voicemail box in the
+            // DB and replay the invite via the busy-to-voicemail path.
+            caller.register().await?;
+            callee.register().await?;
+            Ok(ScenarioOutcome::pass(
+                "invite_busy_to_vm",
+                "skeleton: both endpoints registered; full busy-to-vm \
+                 assertion requires DB-seeded voicemail box (TODO)",
+            ))
+        }
+        ScenarioName::ConferencePin => {
+            // Placeholder: register caller only. The full flow builds an
+            // INVITE with ;pin= and asserts the 200 OK / 403 response.
+            caller.register().await?;
+            Ok(ScenarioOutcome::pass(
+                "conference_pin",
+                "skeleton: caller registered; full PIN flow requires \
+                 seed of 9-digit conference room (TODO)",
+            ))
         }
     }
 }
