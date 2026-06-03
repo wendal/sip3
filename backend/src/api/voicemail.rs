@@ -58,15 +58,15 @@ pub async fn create_box(
     let domain = body
         .domain
         .as_deref()
-        .unwrap_or(&state.config.server.sip_domain)
+        .unwrap_or(&state.config.load().server.sip_domain)
         .to_string();
     let enabled = body.enabled.unwrap_or(1);
     let no_answer_secs = body
         .no_answer_secs
-        .unwrap_or(state.config.server.voicemail_no_answer_secs);
+        .unwrap_or(state.config.load().server.voicemail_no_answer_secs);
     let max_message_secs = body
         .max_message_secs
-        .unwrap_or(state.config.server.voicemail_max_message_secs);
+        .unwrap_or(state.config.load().server.voicemail_max_message_secs);
     let max_messages = body.max_messages.unwrap_or(100);
 
     validate_enabled_flag(body.enabled).map_err(|m| (StatusCode::BAD_REQUEST, m.to_string()))?;
@@ -258,7 +258,7 @@ pub async fn download_message(
 
     // Read audio file from storage
     let storage = LocalVoicemailStorage::new(PathBuf::from(
-        state.config.server.voicemail_storage_dir.clone(),
+        state.config.load().server.voicemail_storage_dir.clone(),
     ));
     let bytes = storage.read(&storage_key).await.map_err(|e| {
         if e.to_string().contains("No such file or directory")

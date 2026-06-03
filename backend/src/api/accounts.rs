@@ -54,7 +54,7 @@ pub async fn create(
     let password_hash = hash(&body.password, DEFAULT_COST)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let realm = &state.config.auth.realm;
+    let realm = &state.config.load().auth.realm;
     let domain = body.domain.as_deref().unwrap_or(realm.as_str()).to_string();
 
     // Pre-compute HA1 for SIP Digest auth: MD5(username:realm:password)
@@ -109,7 +109,7 @@ pub async fn update(
         None => return Err((StatusCode::NOT_FOUND, "Account not found".to_string())),
     };
 
-    let realm = &state.config.auth.realm;
+    let realm = &state.config.load().auth.realm;
 
     // Compute updated hashes only if a new password was provided.
     let (new_password_hash, new_ha1) = if let Some(password) = &body.password {

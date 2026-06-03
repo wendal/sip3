@@ -35,7 +35,7 @@ async fn verify_sip_credentials(
     password: &str,
     domain: &str,
 ) -> Result<(), (StatusCode, String)> {
-    let realm = &state.config.auth.realm;
+    let realm = &state.config.load().auth.realm;
     let ha1_computed = format!(
         "{:x}",
         md5::compute(format!("{}:{}:{}", username, realm, password))
@@ -73,17 +73,17 @@ pub async fn history(
     let offset = body.offset.unwrap_or(0);
     let account_domain = body
         .domain
-        .unwrap_or_else(|| state.config.server.sip_domain.clone());
+        .unwrap_or_else(|| state.config.load().server.sip_domain.clone());
     verify_sip_credentials(&state, &body.username, &body.password, &account_domain).await?;
 
-    let message_domain = state.config.server.sip_domain.clone();
+    let message_domain = state.config.load().server.sip_domain.clone();
     let self_aor = format!("{}@{}", body.username, message_domain);
 
     let rows: Vec<SipMessageRecord> = if let Some(peer) = body.peer.as_deref().map(str::trim) {
         if peer.is_empty() {
             return Err((StatusCode::BAD_REQUEST, "peer cannot be empty".to_string()));
         }
-        let peer_aor = format!("{}@{}", peer, state.config.server.sip_domain);
+        let peer_aor = format!("{}@{}", peer, state.config.load().server.sip_domain);
         sqlx::query_as(
             "SELECT id, message_id, call_id, sender, receiver, content_type, body, status, source_ip, created_at, delivered_at
              FROM sip_messages

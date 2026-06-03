@@ -1,4 +1,5 @@
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use axum::{
     Router,
     extract::Request,
@@ -14,6 +15,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
 use crate::config::Config;
+use crate::config_watch::ConfigWatcher;
 use crate::security_guard::{GuardLimits, SecurityGuard};
 
 pub mod accounts;
@@ -39,11 +41,14 @@ pub mod webhooks;
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
-    pub config: Config,
+    /// Hot-reloadable config. Read with `state.config.load().server.sip_domain`.
+    pub config: Arc<ArcSwap<Config>>,
     /// Effective JWT signing secret (may be randomly generated at startup if not configured).
     pub jwt_secret: String,
     pub auth_guard: Arc<Mutex<SecurityGuard>>,
     pub rate_limiter: Option<rate_limit::RateLimiter>,
+    /// Watches the config and broadcasts reloads to the rest of the system.
+    pub config_watcher: Arc<ConfigWatcher>,
 }
 
 /// Extract a Bearer token from the `Authorization` header.
@@ -88,7 +93,7 @@ async fn require_auth(
     }
 
     // Try X-Api-Key.
-    if let Some(api_key) = &state.config.auth.api_key {
+    if let Some(api_key) = &state.config.load().auth.api_key {
         let provided = req.headers().get("x-api-key").and_then(|v| v.to_str().ok());
         if provided == Some(api_key.as_str()) {
             return Ok(next.run(req).await);
@@ -141,9 +146,15 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         None
     };
 
+    let config_arc = Arc::new(ArcSwap::from_pointee(cfg.clone()));
+    let config_watcher = Arc::new(ConfigWatcher::new(
+        config_arc.clone(),
+        cfg.cleanup.acl_refresh_interval_secs,
+    ));
+
     let state = AppState {
         pool,
-        config: cfg.clone(),
+        config: config_arc,
         jwt_secret,
         auth_guard: Arc::new(Mutex::new(SecurityGuard::new(GuardLimits {
             window_secs: cfg.security.window_secs,
@@ -152,12 +163,19 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
             block_secs: cfg.security.block_secs,
         }))),
         rate_limiter,
+        config_watcher: config_watcher.clone(),
     };
+
+    // Spawn the periodic config reload task. It reloads from
+    // `SIP3__*` env vars and `config.toml` (if present) and atomically
+    // replaces the live config.
+    config_watcher.spawn_periodic_reload();
 
     // JWT-only routes: caller must present a valid Bearer token; claims are injected.
     let jwt_routes = Router::new()
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/change-password", post(auth::change_password))
+        .route("/api/admin/reload", post(admin_reload))
         .layer(middleware::from_fn_with_state(state.clone(), require_jwt));
 
     // Dual-auth routes: accept Bearer JWT or X-Api-Key.
@@ -248,6 +266,30 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
 
 async fn health() -> &'static str {
     "OK"
+}
+
+/// Reload the runtime config from `SIP3__*` env vars and the optional
+/// `config.toml`. Replaces the live `Arc<ArcSwap<Config>>` atomically so
+/// in-flight handlers see the new values on their next read.
+async fn admin_reload(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    match state.config_watcher.reload_now().await {
+        Ok(cfg) => {
+            crate::api::metrics::inc_config_reload();
+            info!("admin: config reloaded");
+            Ok(axum::Json(serde_json::json!({
+                "status": "reloaded",
+                "sip_domain": cfg.server.sip_domain,
+                "api_port": cfg.server.api_port,
+                "public_ip": cfg.server.public_ip,
+            })))
+        }
+        Err(e) => {
+            tracing::warn!("admin: config reload failed: {}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
 }
 
 /// Prometheus exposition format. Public (no auth) so scrapers can hit it.

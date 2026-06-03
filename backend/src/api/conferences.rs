@@ -34,7 +34,7 @@ pub async fn create(
     validate_conference_extension(&body.extension)
         .map_err(|m| (StatusCode::BAD_REQUEST, m.to_string()))?;
 
-    let realm = &state.config.auth.realm;
+    let realm = &state.config.load().auth.realm;
     let domain = body.domain.as_deref().unwrap_or(realm.as_str()).to_string();
     let max_participants = body.max_participants.unwrap_or(20);
     let enabled = body.enabled.unwrap_or(1);
