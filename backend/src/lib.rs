@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod api;
 pub mod config;
+pub mod config_watch;
 pub mod db;
 pub mod models;
 pub mod security_guard;

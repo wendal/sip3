@@ -21,14 +21,19 @@ pub mod acl;
 pub mod admin_users;
 pub mod auth;
 pub mod conferences;
+pub mod email_worker;
 pub mod jwt;
 pub mod messages;
+pub mod metrics;
+pub mod openapi;
 pub mod rate_limit;
 pub mod security;
 pub mod stats;
 pub mod status;
 pub mod turn;
 pub mod voicemail;
+pub mod webhook_dispatcher;
+pub mod webhooks;
 
 /// Combined application state passed to all handlers
 #[derive(Clone)]
