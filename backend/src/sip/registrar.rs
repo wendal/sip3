@@ -276,6 +276,21 @@ impl Registrar {
 
             crate::api::metrics::inc_registration();
 
+            // Fire-and-forget webhook: registration.changed
+            let payload = serde_json::json!({
+                "event": "registration.changed",
+                "username": username,
+                "domain": domain,
+                "contact": contact_uri,
+                "source_ip": source_ip,
+                "expires": expires,
+            });
+            let dispatcher =
+                crate::api::webhook_dispatcher::WebhookDispatcher::new(self.pool.clone());
+            if let Err(e) = dispatcher.enqueue("registration.changed", payload).await {
+                warn!("webhook enqueue failed: {}", e);
+            }
+
             Ok(base_response(msg, 200, "OK")
                 .header("Contact", &format!("<{}>;expires={}", contact_uri, expires))
                 .build())

@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
+use crate::api::webhook_dispatcher::WebhookDispatcher;
 use crate::config::Config;
 use crate::config_watch::ConfigWatcher;
 use crate::security_guard::{GuardLimits, SecurityGuard};
@@ -49,6 +50,8 @@ pub struct AppState {
     pub rate_limiter: Option<rate_limit::RateLimiter>,
     /// Watches the config and broadcasts reloads to the rest of the system.
     pub config_watcher: Arc<ConfigWatcher>,
+    /// Webhook outbox dispatcher; enqueue from anywhere, drain from background.
+    pub webhook_dispatcher: Arc<WebhookDispatcher>,
 }
 
 /// Extract a Bearer token from the `Authorization` header.
@@ -153,7 +156,7 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
     ));
 
     let state = AppState {
-        pool,
+        pool: pool.clone(),
         config: config_arc,
         jwt_secret,
         auth_guard: Arc::new(Mutex::new(SecurityGuard::new(GuardLimits {
@@ -164,12 +167,16 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         }))),
         rate_limiter,
         config_watcher: config_watcher.clone(),
+        webhook_dispatcher: Arc::new(WebhookDispatcher::new(pool)),
     };
 
     // Spawn the periodic config reload task. It reloads from
     // `SIP3__*` env vars and `config.toml` (if present) and atomically
     // replaces the live config.
     config_watcher.spawn_periodic_reload();
+
+    // Spawn the webhook outbox drainer.
+    state.webhook_dispatcher.clone().spawn_worker();
 
     // JWT-only routes: caller must present a valid Bearer token; claims are injected.
     let jwt_routes = Router::new()
@@ -234,6 +241,16 @@ pub async fn run(cfg: Config, pool: MySqlPool) -> Result<()> {
         .route(
             "/api/voicemail/messages/:id/download",
             get(voicemail::download_message),
+        )
+        .route("/api/webhooks", get(webhooks::list).post(webhooks::create))
+        .route(
+            "/api/webhooks/:id",
+            put(webhooks::update).delete(webhooks::delete),
+        )
+        .route("/api/webhooks/deliveries", get(webhooks::list_deliveries))
+        .route(
+            "/api/webhooks/deliveries/:id/retry",
+            post(webhooks::retry_delivery),
         )
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 

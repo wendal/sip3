@@ -133,6 +133,18 @@ impl VoicemailMwi {
 
     pub async fn notify_mailbox(&self, username: &str, domain: &str) -> Result<()> {
         let (new_count, saved_count) = self.message_counts(username, domain).await?;
+        // Fire-and-forget webhook: voicemail.mwi
+        let payload = serde_json::json!({
+            "event": "voicemail.mwi",
+            "username": username,
+            "domain": domain,
+            "new_messages": new_count,
+            "saved_messages": saved_count,
+        });
+        let dispatcher = crate::api::webhook_dispatcher::WebhookDispatcher::new(self.pool.clone());
+        if let Err(e) = dispatcher.enqueue("voicemail.mwi", payload).await {
+            warn!("webhook enqueue failed: {}", e);
+        }
         let rows: Vec<(String, String, String, u16, u32)> = sqlx::query_as(
             "SELECT call_id, subscriber_tag, subscriber_ip, subscriber_port, cseq
              FROM sip_voicemail_mwi_subscriptions
