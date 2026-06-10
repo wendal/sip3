@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [v1.9.2] - 2026-06-10
+
+### Fixed
+- **Frontend container 502 on legacy builder**: `docker/Dockerfile.frontend` used `RUN cat > /etc/nginx/conf.d/default.conf << 'NGINX' ... NGINX` to write the nginx site config inline. Inline heredocs in `RUN` are a BuildKit-only Dockerfile syntax (need the `# syntax=docker/dockerfile:1.4+` pragma); under the legacy builder we switched to in v1.9.1 the heredoc body is silently dropped and `default.conf` is created empty. The container starts, nginx accepts the config (empty is technically valid), no port :80 server block exists, and every request returns connection-reset → upstream 502. GHCR-built images escape this because GitHub Actions defaults to BuildKit. Fix: move the site config to a checked-in `docker/nginx-default.conf` and `COPY` it in.
+
 ## [v1.9.1] - 2026-06-10
 
 ### Fixed
