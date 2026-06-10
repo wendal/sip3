@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [v1.9.1] - 2026-06-10
 
 ### Fixed
 - **GitLab CI `docker_publish` base image pull**: Pinned all four `FROM` base images (backend: `rust:1.95.0-slim` + `debian:bookworm-slim`; frontend: `node:20-alpine` + `nginx:alpine`) to `harbor.air32.cn/sip3/<image>` instead of the implicit `docker.io/library/<image>`. The shared GitLab runner host (dy01) cannot reach `registry-1.docker.io` and its only configured `registry-mirrors` (`1ms.run`) is unreliable, so `FROM node:20-alpine` was timing out at `docker build` time and breaking `docker_publish` even after the BuildKit syntax pragma was removed. Base images were pre-pulled on `sip.air32.cn` (which can reach docker.io) and pushed into the existing `harbor.air32.cn/sip3` namespace. The runner already authenticates against Harbor for the push step, so the same credentials cover the new pull path. Refresh procedure: `docker pull <official>:<tag>; docker tag ... harbor.air32.cn/sip3/<image>:<tag>; docker push ...` whenever a base image needs updating.
