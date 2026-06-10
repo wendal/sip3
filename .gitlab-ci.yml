@@ -45,6 +45,7 @@ docker_publish:
     - frontend_build
   before_script:
     - unset DOCKER_HOST DOCKER_TLS_CERTDIR
+    - export DOCKER_BUILDKIT=0
     - docker version
     - test -n "$HARBOR_USER"
     - test -n "$HARBOR_PASSWORD"

@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **GitLab CI**: removed BuildKit `# syntax=docker/dockerfile:1` pragma from `docker/Dockerfile.backend` and `docker/Dockerfile.frontend`, and forced `DOCKER_BUILDKIT=0` in the `docker_publish` job. The shared runner host has a single registry-mirror (`1ms.run`) that rate-limits the `docker/dockerfile` frontend pull and cannot reach `registry-1.docker.io` directly, so BuildKit's syntax-image fetch was returning 429 and failing every build. Both Dockerfiles only use Dockerfile v1.x base syntax, so the pragma is removable with no behavior change.
+
 ## [v1.9.0] - 2026-06-03
 
 ### Added
