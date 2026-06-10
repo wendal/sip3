@@ -210,9 +210,16 @@ pub async fn openapi_json() -> Json<Value> {
 
 /// Build a `SwaggerUi` ready to be merged into a typed `Router<S>`. The UI
 /// is mounted at `/api/docs` (and any sub-paths needed by the bundle) and
-/// uses `/api/openapi.json` as the spec source.
+/// uses `/api/openapi-internal.json` as the spec source.
+///
+/// Note: this internal URL is separate from the public `/api/openapi.json`
+/// endpoint registered in `api/mod.rs` (the hand-rolled, fully-populated spec
+/// for external API consumers). Sharing the same path here caused an axum
+/// duplicate-route panic at startup, so the Swagger UI bundle gets its own
+/// utoipa-derived URL.
 pub fn swagger_ui() -> utoipa_swagger_ui::SwaggerUi {
-    utoipa_swagger_ui::SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi())
+    utoipa_swagger_ui::SwaggerUi::new("/api/docs")
+        .url("/api/openapi-internal.json", ApiDoc::openapi())
 }
 
 /// Handler that returns the OpenAPI 3.1 spec as JSON. Mounted at
